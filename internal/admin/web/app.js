@@ -10,7 +10,6 @@
     page: "accounts",
     loading: false,
     videos: [],
-    videosFingerprint: "",
   };
   const statusLabels = {
     ready: "可用",
@@ -81,7 +80,6 @@
     state.connection = null;
     state.flow = null;
     state.videos = [];
-    state.videosFingerprint = "";
     clearTimeout(videoPollTimer);
     videoLoadVersion++;
     $("video-jobs").replaceChildren();
@@ -249,6 +247,10 @@
     }
   }
   function renderVideos() {
+    const root = $("video-jobs");
+    const existing = new Map(
+      Array.from(root.children, (card) => [card.dataset.jobId, card]),
+    );
     const labels = {
       queued: "等待开始",
       in_progress: "正在生成",
@@ -258,66 +260,93 @@
     $("video-history-status").textContent = state.videos.length
       ? `${state.videos.length} 条记录 · 生成中自动更新`
       : "暂无生成记录，提交描述后会显示在这里。";
-    $("video-jobs").replaceChildren(
-      ...state.videos.map((job) => {
-        const card = document.createElement("article");
-        card.className = "video-card";
-        const header = document.createElement("div");
-        header.className = "video-card-heading";
-        const status = document.createElement("span");
-        status.className =
-          "status " +
-          (job.status === "completed"
-            ? "ready"
-            : job.status === "failed"
-              ? "error"
-              : "expired");
-        status.textContent = labels[job.status] || job.status;
-        const time = document.createElement("span");
-        time.className = "form-hint";
-        time.textContent = date(job.created_at);
-        header.append(status, time);
-        const prompt = document.createElement("p");
-        prompt.className = "video-job-prompt";
-        prompt.textContent = job.prompt;
-        const meta = document.createElement("p");
-        meta.className = "form-hint";
-        meta.textContent = `${job.model} · ${job.seconds} 秒 · ${job.size}`;
-        card.append(header, prompt, meta);
-        if (job.status === "completed" && job.url) {
-          const player = document.createElement("video");
-          player.controls = true;
-          player.preload = "metadata";
-          player.playsInline = true;
+    const cards = state.videos.map((job) => {
+      const renderKey = JSON.stringify([job.status, job.error, job.file_id]);
+      const previous = existing.get(job.id);
+      if (previous?.dataset.renderKey === renderKey) {
+        const link = previous.querySelector(".video-download");
+        if (link && job.url) link.href = job.url;
+        const player = previous.querySelector("video");
+        if (
+          player &&
+          job.url &&
+          Number(new URL(player.src).searchParams.get("expires")) <
+            Date.now() / 1000 + 60
+        )
           player.src = job.url;
-          player.setAttribute("aria-label", "生成的视频");
-          card.append(player);
-          const link = document.createElement("a");
-          link.className = "button small video-download";
-          link.href = job.url;
-          link.download = job.id + ".mp4";
-          link.textContent = "下载视频";
-          card.append(link);
-        }
-        if (job.error) {
-          const error = document.createElement("p");
-          error.className = "form-error";
-          error.textContent = job.error;
-          card.append(error);
-        }
-        if (job.result) {
-          const details = document.createElement("details");
-          const summary = document.createElement("summary");
-          summary.textContent = "Quick 生成说明";
-          const text = document.createElement("p");
-          text.className = "video-result";
-          text.textContent = job.result;
-          details.append(summary, text);
-          card.append(details);
-        }
-        return card;
-      }),
-    );
+        const details = previous.querySelector(".video-result");
+        if (details && details.textContent !== job.result)
+          details.textContent = job.result;
+        return previous;
+      }
+      const card = document.createElement("article");
+      card.className = "video-card";
+      card.dataset.jobId = job.id;
+      card.dataset.renderKey = renderKey;
+      const header = document.createElement("div");
+      header.className = "video-card-heading";
+      const status = document.createElement("span");
+      status.className =
+        "status " +
+        (job.status === "completed"
+          ? "ready"
+          : job.status === "failed"
+            ? "error"
+            : "expired");
+      status.textContent = labels[job.status] || job.status;
+      const time = document.createElement("span");
+      time.className = "form-hint";
+      time.textContent = date(job.created_at);
+      header.append(status, time);
+      const prompt = document.createElement("p");
+      prompt.className = "video-job-prompt";
+      prompt.textContent = job.prompt;
+      const meta = document.createElement("p");
+      meta.className = "form-hint";
+      meta.textContent = `${job.model} · ${job.seconds} 秒 · ${job.size}`;
+      card.append(header, prompt, meta);
+      if (job.status === "completed" && job.url) {
+        const player = document.createElement("video");
+        player.controls = true;
+        player.preload = "metadata";
+        player.playsInline = true;
+        player.src = job.url;
+        player.setAttribute("aria-label", "生成的视频");
+        card.append(player);
+        const link = document.createElement("a");
+        link.className = "button small video-download";
+        link.href = job.url;
+        link.download = job.id + ".mp4";
+        link.textContent = "下载视频";
+        card.append(link);
+      }
+      if (job.error) {
+        const error = document.createElement("p");
+        error.className = "form-error";
+        error.textContent = job.error;
+        card.append(error);
+      }
+      if (job.result) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Quick 生成说明";
+        const text = document.createElement("p");
+        text.className = "video-result";
+        text.textContent = job.result;
+        details.append(summary, text);
+        card.append(details);
+      }
+      return card;
+    });
+    cards.forEach((card, index) => {
+      const current = root.children[index];
+      if (current !== card) {
+        if (current?.dataset.jobId === card.dataset.jobId)
+          root.replaceChild(card, current);
+        else root.insertBefore(card, current || null);
+      }
+    });
+    while (root.children.length > cards.length) root.lastElementChild.remove();
   }
   async function loadVideos() {
     const version = ++videoLoadVersion;
@@ -331,14 +360,8 @@
         state.page !== "videos"
       )
         return;
-      const fingerprint = JSON.stringify(
-        result.data.map((j) => [j.id, j.status, j.error, j.result, j.file_id]),
-      );
-      if (fingerprint !== state.videosFingerprint) {
-        state.videos = result.data;
-        state.videosFingerprint = fingerprint;
-        renderVideos();
-      }
+      state.videos = result.data;
+      renderVideos();
     } catch (error) {
       $("video-history-status").textContent = error.message;
     } finally {
