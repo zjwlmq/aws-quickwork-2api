@@ -26,6 +26,10 @@
           transform="translate(1 0)"
         />
       </symbol>
+      <symbol id="i-video" viewBox="0 0 24 24">
+        <rect x="3" y="5" width="18" height="14" rx="3" />
+        <path d="m10 9 5 3-5 3z" />
+      </symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24">
         <path d="M20 7a9 9 0 1 0 1 9M20 2v6h-6" />
       </symbol>
@@ -116,6 +120,10 @@
           <button class="nav-item" id="nav-connection" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-link" /></svg
             ><span>接入信息</span>
+          </button>
+          <button class="nav-item" id="nav-videos" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-video" /></svg>
+            <span>视频生成</span>
           </button>
         </nav>
         <div class="sidebar-bottom">
@@ -225,6 +233,110 @@
           <p class="privacy-note">账号凭据仅保存在服务器，列表不展示 Token。</p>
         </section>
 
+        <section
+          id="videos-section"
+          class="videos-section"
+          hidden
+          aria-label="视频生成"
+        >
+          <div class="video-layout">
+            <form id="video-form" class="video-compose">
+              <h2>描述你想制作的画面</h2>
+              <p class="form-hint">
+                直接交给 Quick 制作，也可以添加一张参考图片。
+              </p>
+              <label for="video-prompt">视频描述</label>
+              <textarea
+                id="video-prompt"
+                rows="7"
+                maxlength="6000"
+                required
+                placeholder="例如：蓝色小球在浅色背景上从左向右弹跳，镜头固定，画面简洁。"
+              ></textarea>
+              <div class="video-fields">
+                <div>
+                  <label for="video-model">Quick 模式</label
+                  ><select id="video-model">
+                    <option value="smart">smart</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="video-seconds">时长（秒）</label
+                  ><input
+                    id="video-seconds"
+                    type="number"
+                    min="1"
+                    max="30"
+                    value="5"
+                    required
+                  />
+                </div>
+                <div>
+                  <label for="video-size">画面尺寸</label
+                  ><select id="video-size">
+                    <option value="1280x720">横屏 · 720p</option>
+                    <option value="720x1280">竖屏 · 720p</option>
+                    <option value="1024x1024">方形 · 1024</option>
+                    <option value="1920x1080">横屏 · 1080p</option>
+                  </select>
+                </div>
+              </div>
+              <label for="video-image"
+                >参考图片 <span class="optional">可选</span></label
+              >
+              <input
+                id="video-image"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                aria-describedby="video-image-hint"
+              />
+              <p class="form-hint" id="video-image-hint">
+                PNG、JPG、WebP 或 GIF，最大 10 MiB。
+              </p>
+              <div class="reference-preview" id="reference-preview" hidden>
+                <img id="reference-image" alt="视频参考图片预览" /><button
+                  class="button small"
+                  type="button"
+                  id="remove-reference"
+                >
+                  移除图片
+                </button>
+              </div>
+              <div
+                id="video-error"
+                class="form-error"
+                role="alert"
+                hidden
+              ></div>
+              <button
+                id="video-submit"
+                type="submit"
+                class="button primary full"
+              >
+                开始生成
+              </button>
+              <p class="form-hint video-note">
+                使用当前 Quick
+                账号可用的制作工具。任务在后台运行，完成后可预览和下载；复杂画面能否生成取决于账号能力。
+              </p>
+            </form>
+            <section
+              class="video-history"
+              aria-labelledby="video-history-title"
+            >
+              <div class="video-history-heading">
+                <h2 id="video-history-title">生成记录</h2>
+                <button id="refresh-videos" type="button" class="button small">
+                  刷新
+                </button>
+              </div>
+              <p id="video-history-status" class="form-hint" role="status">
+                暂无生成记录
+              </p>
+              <div id="video-jobs" class="video-jobs"></div>
+            </section>
+          </div>
+        </section>
         <section
           class="connection-panel"
           id="connection-panel"

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"quickwork-openai/internal/store"
 	"strings"
 	"time"
 
@@ -15,19 +16,42 @@ import (
 )
 
 type Server struct {
-	cfg      *config.Config
-	accounts *accounts.Manager
-	tokens   *APIKeyAuth
-	upstream *Upstream
+	cfg         *config.Config
+	accounts    *accounts.Manager
+	tokens      *APIKeyAuth
+	upstream    *Upstream
+	store       *store.Store
+	mediaSecret []byte
+	videoSlots  chan struct{}
 }
 
-func NewServer(cfg *config.Config, mgr *accounts.Manager) *Server {
-	return &Server{
+func NewServer(cfg *config.Config, mgr *accounts.Manager, stores ...*store.Store) *Server {
+	s := &Server{
 		cfg:      cfg,
 		accounts: mgr,
 		tokens:   NewAPIKeyAuth(cfg.APIKeys),
 		upstream: NewUpstream(cfg),
 	}
+	if len(stores) > 0 {
+		s.store = stores[0]
+	}
+	s.videoSlots = make(chan struct{}, 2)
+	return s
+}
+
+func (s *Server) InitMedia(ctx context.Context) error {
+	if s.store == nil {
+		return nil
+	}
+	if err := s.store.InitMedia(ctx); err != nil {
+		return err
+	}
+	secret, err := s.store.MediaSecret(ctx)
+	if err != nil {
+		return err
+	}
+	s.mediaSecret = secret
+	return s.store.RecoverVideos(ctx)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -35,6 +59,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/chat/completions", s.handleChat)
+	mux.HandleFunc("/v1/media/{id}", s.serveMedia)
+	mux.HandleFunc("/v1/videos", s.videoAPI)
+	mux.HandleFunc("/v1/videos/{id}", s.videoAPI)
+	mux.HandleFunc("/v1/videos/{id}/content", s.videoAPI)
 	return s.withCORS(mux)
 }
 
@@ -88,7 +116,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ChatRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxChatBody))
 	if err := dec.Decode(&req); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
 		return
@@ -98,7 +126,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt, err := formatPrompt(req.Messages)
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout.Duration())
+	defer cancel()
+	prepared, attachments, err := prepareMedia(ctx, req.Messages)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_media", err.Error())
+		return
+	}
+	prompt, err := formatPrompt(prepared)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -124,9 +159,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		bridgeAllowed = map[string]bool{choiceName: true}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout.Duration())
-	defer cancel()
-
 	threadID := strings.TrimSpace(r.Header.Get("X-Thread-Id"))
 	id := "chatcmpl-" + strings.ReplaceAll(uuid(), "-", "")
 	created := time.Now().Unix()
@@ -136,6 +168,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		ThreadID:     threadID,
 		Title:        titleFor(lastUserText(req.Messages)),
 		SystemPrompt: systemPromptText,
+		Attachments:  attachments,
 	}
 
 	if !req.Stream {
@@ -148,6 +181,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			sess := SessionFromAccount(acct, s.cfg)
+			owner := ownerKey(tokenFromRequest(r))
+			in.ArtifactHandler = func(ctx context.Context, thread string, refs []NativeArtifact) ([]store.MediaFile, error) {
+				return s.cacheArtifacts(ctx, sess, owner, thread, refs)
+			}
 			if err := sess.validate(); err != nil {
 				s.accounts.ReportFailure(ctx, acct.ID, err)
 				lastErr = err
@@ -172,7 +209,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, status, code, lastErr.Error())
 			return
 		}
-		text := res.Text
+		text := replaceNativeLinks(res.Text, res.Files)
 		var bridgeReplies []ToolCallReply
 		if bridgeActive {
 			text, bridgeReplies = parseClientToolCalls(text, bridgeAllowed)
@@ -184,7 +221,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if len(toolCalls) == 0 {
 			toolCalls = filterToolCalls(res.ToolCalls, allowedTools, choiceMode, choiceName, parallelTools)
 		}
-		if strings.TrimSpace(text) == "" && len(toolCalls) == 0 {
+		if strings.TrimSpace(text) == "" && len(toolCalls) == 0 && len(res.Files) == 0 {
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "upstream returned no text or tool calls")
 			return
 		}
@@ -196,6 +233,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(toolCalls) > 0 {
 			message["tool_calls"] = toolCalls
+		}
+		if len(res.Files) > 0 {
+			message["attachments"] = res.Files
 		}
 		finish := "stop"
 		if len(bridgeReplies) > 0 || (strings.TrimSpace(text) == "" && len(toolCalls) > 0) {
@@ -276,6 +316,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			"code":    "upstream_error",
 		}})
 	}
+	mediaText := mediaStream{emit: func(text string) { writeChunk(map[string]any{"content": text}, nil) }}
 
 	sawText := false
 	sawTool := false
@@ -344,6 +385,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		sess := SessionFromAccount(acct, s.cfg)
+		owner := ownerKey(tokenFromRequest(r))
+		in.ArtifactHandler = func(ctx context.Context, thread string, refs []NativeArtifact) ([]store.MediaFile, error) {
+			return s.cacheArtifacts(ctx, sess, owner, thread, refs)
+		}
 		if err := sess.validate(); err != nil {
 			s.accounts.ReportFailure(ctx, acct.ID, err)
 			lastErr = err
@@ -360,7 +405,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 					return nil
 				}
 				sawText = true
-				writeChunk(map[string]any{"content": ev.Text}, nil)
+				mediaText.push(ev.Text, false, nil)
 			case "tool_call", "tool_call_update":
 				if bridgeActive {
 					return nil
@@ -385,11 +430,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		sawText = false
 		sawTool = false
 		bridgeBuffer.Reset()
+		mediaText.pending = ""
 		toolIndex = 0
 		toolIndexes = make(map[string]int)
 		sentArgs = make(map[string]string)
 	}
 	if lastErr != nil {
+		if started {
+			mediaText.push("", true, func(link string) string { return replaceNativeLinks(link, nil) })
+		}
 		if !started {
 			status, code := http.StatusBadGateway, "upstream_error"
 			if errors.Is(lastErr, accounts.ErrNoAccounts) {
@@ -404,7 +453,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bridgeActive {
-		text, replies := parseClientToolCalls(bridgeBuffer.String(), bridgeAllowed)
+		if len(res.Files) > 0 {
+			writeChunk(map[string]any{"attachments": res.Files}, nil)
+		}
+		text, replies := parseClientToolCalls(replaceNativeLinks(bridgeBuffer.String(), res.Files), bridgeAllowed)
 		if !parallelTools && len(replies) > 1 {
 			replies = replies[:1]
 		}
@@ -425,7 +477,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 			writeChunk(map[string]any{}, "tool_calls")
 		} else {
-			if strings.TrimSpace(text) == "" {
+			if strings.TrimSpace(text) == "" && len(res.Files) == 0 {
 				writeStreamError("upstream returned no text or tool calls")
 				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 				flusher.Flush()
@@ -448,11 +500,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 		return
 	}
-	if !sawText && !sawTool {
+	if !sawText && !sawTool && len(res.Files) == 0 {
 		writeStreamError("upstream returned no text or tool calls")
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return
+	}
+	mediaText.push("", true, func(link string) string { return replaceNativeLinks(link, res.Files) })
+	if len(res.Files) > 0 {
+		writeChunk(map[string]any{"attachments": res.Files}, nil)
 	}
 	finish := "stop"
 	if !sawText && sawTool {

@@ -145,9 +145,14 @@ func serve(args []string) int {
 
 	mgr := accounts.New(st, cfg)
 	count, _ := mgr.EnabledCount(context.Background())
-	handler := proxy.NewServer(cfg, mgr).Handler()
+	apiServer := proxy.NewServer(cfg, mgr, st)
+	if err := apiServer.InitMedia(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, "media:", err)
+		return 1
+	}
+	handler := apiServer.Handler()
 	if cfg.Admin.Enabled {
-		console, err := admin.New(cfg, st, mgr)
+		console, err := admin.New(cfg, st, mgr, apiServer)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "admin:", err)
 			return 1

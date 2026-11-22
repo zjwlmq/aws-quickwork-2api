@@ -281,7 +281,7 @@ sequenceDiagram
 
 ## 限制
 
-- 只实现聊天补全。`temperature`、`max_tokens`、`stop`、`response_format` 等采样参数不会传给上游；`n > 1` 会返回 400。
+- 提供聊天补全、原生附件传递和异步视频制作。`temperature`、`max_tokens`、`stop`、`response_format` 等采样参数不会传给上游；`n > 1` 会返回 400。
 - 工具执行在客户端；代理只负责把模型输出转成 `tool_calls`。桥接使用文本协议，模型偶尔可能不遵守；带工具的流式响应会缓冲到本轮结束。
 - `system_prompt` 覆盖已在 social 路径验证；enterprise / gateway 仍待验证。空 system 消息也会发送覆盖声明，因此服务端默认提示词不会生效。
 - `model` 会映射为上游 agent mode：`smart`、`fast`、`balanced`、`auto`。
@@ -352,6 +352,51 @@ API Key 和管理员密码分别用于 API 与控制台，API Key 不能登录�
 修改管理员密码时，重新生成摘要并更新 `config.json` 中的 `admin.password_hash`，
 随后重启服务。也可将新密码通过标准输入传给 `quickproxy admin-hash`，只输出摘要。
 重启会撤销已有的管理员登录会话。
+
+## 图片、文件与视频（此部署扩展）
+
+聊天接口会将媒体原始字节传给 Quick。`messages[].content` 支持
+`image_url`（公开 HTTPS URL 或 Base64 data URL）、`file` / `input_file`
+（`filename` 与 `file_data` 或 `file_url`）和 `input_audio`（Base64，mp3/wav/flac/ogg）。
+单张图片最大 10 MiB，最多 20 个附件、合计 50 MiB；请求体上限 80 MiB。
+不接受其他平台的 `file_id`。媒体 URL 不能访问内网或本机。
+已验证图片识别与文本文件读取；音频传递和其他文档类型的理解能力以账号上游支持为准。
+暂未提供视频内容理解输入。
+
+Quick 生成的工作区文件会在会话清理之前下载到数据库旁边的 `media/` 目录，
+响应的 `message.attachments` 给出文件信息，正文中的 `qw-file://` 转为可访问链接。
+流式响应在文件缓存完成后返回链接及 `delta.attachments`。
+单个生成文件最大 256 MiB。下载支持 Range，需使用对应 API Key 或有效签名链接；
+签名有效期 24 小时，可重新读取视频任务获取新链接。
+服务启动需要数据库目录可写，服务器需安装 `ffmpeg` / `ffprobe`，
+以校验 MP4 并在需要时转为浏览器可播放的 H.264/yuv420p。
+
+管理员可在 `/admin/#videos` 输入描述、添加参考图片、提交任务并预览/下载。
+API 使用原有 API Key，新增以下路由：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | `/v1/videos` | 提交视频任务，返回 202 与任务 ID |
+| GET | `/v1/videos` | 最近 100 个本 Key 的任务 |
+| GET | `/v1/videos/{id}` | 查询状态，完成后返回 `url` |
+| GET | `/v1/videos/{id}/content` | 跳转至带签名的成片下载地址 |
+
+```bash
+curl https://your-domain.example/v1/videos \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smart","prompt":"浅色背景，蓝色小球水平弹跳的简洁动画","seconds":3,"size":"1280x720"}'
+```
+
+图片制作视频可在 JSON 中增加 `input_reference`（图片 data URL 或公开 URL），
+也支持 `multipart/form-data` 的同名文件字段。`seconds` 范围 1–30，
+`size` 支持 `1280x720`、`720x1280`、`1024x1024`、`1920x1080`。
+这些是提交给 Quick 的制作要求，最终成片规格以实际输出为准。
+状态为 `queued`、`in_progress`、`completed` 或 `failed`，失败原因见 `error` 和 `result`。
+同时最多两个任务，超限返回 429。单个任务最长 30 分钟；重启会将未完成任务标记失败。
+此接口使用 Quick 当前账号的制作工具，不能据此假定拥有 Sora、Veo 等视频模型权限。
+本次已实际验证文字几何动画与参考图片缩放视频，均由 Quick 的代码工具渲染；
+专用生成式视频模型尚未验证。接口是本项目的任务封装，并非完整的 OpenAI Videos SDK 实现。
 
 ## License
 

@@ -9,6 +9,8 @@
     deleting: null,
     page: "accounts",
     loading: false,
+    videos: [],
+    videosFingerprint: "",
   };
   const statusLabels = {
     ready: "可用",
@@ -17,6 +19,8 @@
     disabled: "已停用",
   };
   let toastTimer;
+  let videoPollTimer;
+  let videoLoadVersion = 0;
   function errorAt(id, message) {
     $(id).textContent = message || "";
     $(id).hidden = !message;
@@ -63,7 +67,11 @@
     if (!response.ok) {
       if (response.status === 401 && path !== "/login" && path !== "/session")
         showLogin();
-      throw new Error(result.error || `请求失败（${response.status}）`);
+      throw new Error(
+        result.error?.message ||
+          result.error ||
+          `请求失败（${response.status}）`,
+      );
     }
     return result;
   }
@@ -72,6 +80,15 @@
     state.accounts = [];
     state.connection = null;
     state.flow = null;
+    state.videos = [];
+    state.videosFingerprint = "";
+    clearTimeout(videoPollTimer);
+    videoLoadVersion++;
+    $("video-jobs").replaceChildren();
+    $("video-prompt").value = "";
+    $("video-image").value = "";
+    $("reference-image").removeAttribute("src");
+    $("reference-preview").hidden = true;
     $("loading-screen").hidden = true;
     $("console").hidden = true;
     $("login-screen").hidden = false;
@@ -90,6 +107,13 @@
     $("admin-label").textContent =
       session.username === "admin" ? "管理员" : session.username;
     errorAt("login-error", "");
+    navigate(
+      location.hash === "#videos"
+        ? "videos"
+        : location.hash === "#connection"
+          ? "connection"
+          : "accounts",
+    );
   }
   function escape(value) {
     return String(value ?? "").replace(
@@ -183,26 +207,213 @@
         }),
       );
       $("api-key").value = state.connection.api_keys[0] || "";
+      $("video-model").replaceChildren(
+        ...state.connection.models.map((model) => {
+          const option = document.createElement("option");
+          option.value = model;
+          option.textContent = model;
+          return option;
+        }),
+      );
     } catch (error) {
       toast(error.message, true);
     }
   }
   function navigate(page) {
+    videoLoadVersion++;
     state.page = page;
     $("accounts-section").hidden = page !== "accounts";
     $("header-actions").hidden = page !== "accounts";
     $("key-details").hidden = page !== "connection";
-    $("page-title").textContent = page === "accounts" ? "账号管理" : "接入信息";
+    $("videos-section").hidden = page !== "videos";
+    $("connection-panel").hidden = page === "videos";
+    $("page-title").textContent =
+      page === "accounts"
+        ? "账号管理"
+        : page === "videos"
+          ? "视频生成"
+          : "接入信息";
     $("page-description").textContent =
       page === "accounts"
         ? "管理 Amazon Quick 授权，账号自动轮询使用。"
-        : "在 OpenAI 兼容客户端中使用此服务。";
-    for (const name of ["accounts", "connection"]) {
+        : page === "videos"
+          ? "通过 Quick 聊天制作视频，查看任务进度与成片。"
+          : "在 OpenAI 兼容客户端中使用此服务。";
+    history.replaceState(null, "", "#" + page);
+    clearTimeout(videoPollTimer);
+    if (page === "videos") loadVideos();
+    for (const name of ["accounts", "connection", "videos"]) {
       $("nav-" + name).classList.toggle("selected", name === page);
       if (name === page) $("nav-" + name).setAttribute("aria-current", "page");
       else $("nav-" + name).removeAttribute("aria-current");
     }
   }
+  function renderVideos() {
+    const labels = {
+      queued: "等待开始",
+      in_progress: "正在生成",
+      completed: "已完成",
+      failed: "生成失败",
+    };
+    $("video-history-status").textContent = state.videos.length
+      ? `${state.videos.length} 条记录 · 生成中自动更新`
+      : "暂无生成记录，提交描述后会显示在这里。";
+    $("video-jobs").replaceChildren(
+      ...state.videos.map((job) => {
+        const card = document.createElement("article");
+        card.className = "video-card";
+        const header = document.createElement("div");
+        header.className = "video-card-heading";
+        const status = document.createElement("span");
+        status.className =
+          "status " +
+          (job.status === "completed"
+            ? "ready"
+            : job.status === "failed"
+              ? "error"
+              : "expired");
+        status.textContent = labels[job.status] || job.status;
+        const time = document.createElement("span");
+        time.className = "form-hint";
+        time.textContent = date(job.created_at);
+        header.append(status, time);
+        const prompt = document.createElement("p");
+        prompt.className = "video-job-prompt";
+        prompt.textContent = job.prompt;
+        const meta = document.createElement("p");
+        meta.className = "form-hint";
+        meta.textContent = `${job.model} · ${job.seconds} 秒 · ${job.size}`;
+        card.append(header, prompt, meta);
+        if (job.status === "completed" && job.url) {
+          const player = document.createElement("video");
+          player.controls = true;
+          player.preload = "metadata";
+          player.playsInline = true;
+          player.src = job.url;
+          player.setAttribute("aria-label", "生成的视频");
+          card.append(player);
+          const link = document.createElement("a");
+          link.className = "button small video-download";
+          link.href = job.url;
+          link.download = job.id + ".mp4";
+          link.textContent = "下载视频";
+          card.append(link);
+        }
+        if (job.error) {
+          const error = document.createElement("p");
+          error.className = "form-error";
+          error.textContent = job.error;
+          card.append(error);
+        }
+        if (job.result) {
+          const details = document.createElement("details");
+          const summary = document.createElement("summary");
+          summary.textContent = "Quick 生成说明";
+          const text = document.createElement("p");
+          text.className = "video-result";
+          text.textContent = job.result;
+          details.append(summary, text);
+          card.append(details);
+        }
+        return card;
+      }),
+    );
+  }
+  async function loadVideos() {
+    const version = ++videoLoadVersion;
+    clearTimeout(videoPollTimer);
+    if (!state.session || state.page !== "videos") return;
+    try {
+      const result = await api("/videos");
+      if (
+        version !== videoLoadVersion ||
+        !state.session ||
+        state.page !== "videos"
+      )
+        return;
+      const fingerprint = JSON.stringify(
+        result.data.map((j) => [j.id, j.status, j.error, j.result, j.file_id]),
+      );
+      if (fingerprint !== state.videosFingerprint) {
+        state.videos = result.data;
+        state.videosFingerprint = fingerprint;
+        renderVideos();
+      }
+    } catch (error) {
+      $("video-history-status").textContent = error.message;
+    } finally {
+      if (
+        version === videoLoadVersion &&
+        state.session &&
+        state.page === "videos"
+      )
+        videoPollTimer = setTimeout(loadVideos, 5000);
+    }
+  }
+  function readReference(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("参考图片读取失败"));
+      reader.readAsDataURL(file);
+    });
+  }
+  $("video-image").addEventListener("change", async () => {
+    errorAt("video-error", "");
+    const file = $("video-image").files[0];
+    if (!file) {
+      $("reference-preview").hidden = true;
+      return;
+    }
+    if (
+      file.size > 10 * 1024 * 1024 ||
+      !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(
+        file.type,
+      )
+    ) {
+      errorAt("video-error", "请选择 10 MiB 以内的 PNG、JPG、WebP 或 GIF 图片");
+      $("video-image").value = "";
+      $("reference-preview").hidden = true;
+      return;
+    }
+    try {
+      $("reference-image").src = await readReference(file);
+      $("reference-preview").hidden = false;
+    } catch (error) {
+      errorAt("video-error", error.message);
+    }
+  });
+  $("remove-reference").addEventListener("click", () => {
+    $("video-image").value = "";
+    $("reference-image").removeAttribute("src");
+    $("reference-preview").hidden = true;
+  });
+  $("video-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    errorAt("video-error", "");
+    busy($("video-submit"), true, "正在提交…");
+    try {
+      const file = $("video-image").files[0];
+      await api("/videos", {
+        method: "POST",
+        body: {
+          prompt: $("video-prompt").value.trim(),
+          model: $("video-model").value,
+          seconds: $("video-seconds").value,
+          size: $("video-size").value,
+          input_reference: file ? await readReference(file) : undefined,
+        },
+      });
+      toast("视频任务已提交");
+      await loadVideos();
+    } catch (error) {
+      errorAt("video-error", error.message);
+    } finally {
+      busy($("video-submit"), false);
+    }
+  });
+  $("refresh-videos").addEventListener("click", loadVideos);
+  $("nav-videos").addEventListener("click", () => navigate("videos"));
   async function copy(text, button) {
     if (!text) {
       toast("暂无可复制的内容", true);
@@ -302,7 +513,6 @@
       });
       $("password").value = "";
       showConsole(session);
-      navigate("accounts");
       await Promise.all([loadAccounts(), loadConnection()]);
     } catch (error) {
       errorAt("login-error", error.message);

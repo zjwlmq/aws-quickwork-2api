@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"quickwork-openai/internal/config"
+	"quickwork-openai/internal/store"
 )
 
 const (
@@ -31,11 +32,14 @@ func NewUpstream(cfg *config.Config) *Upstream {
 
 // ChatInput is one upstream turn.
 type ChatInput struct {
-	Prompt       string
-	Model        string
-	ThreadID     string
-	Title        string
-	SystemPrompt string
+	Prompt          string
+	Model           string
+	ThreadID        string
+	Title           string
+	SystemPrompt    string
+	Attachments     []Attachment
+	KeepSession     bool
+	ArtifactHandler ArtifactHandler
 }
 
 // ToolCallState is a tool invocation reported by the QuickWork agent.
@@ -77,6 +81,9 @@ type ChatResult struct {
 	Text      string
 	ToolCalls []ToolCallState
 	Usage     Usage
+	Artifacts []NativeArtifact
+	Files     []store.MediaFile
+	ThreadID  string
 }
 
 // Chat sends one prompt through the QuickWork chat bidi WebSocket. Text
@@ -217,16 +224,26 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 	if u.cfg.ThinkingEffort != "" && u.cfg.ThinkingEffort != "off" {
 		payload["thinking_effort"] = u.cfg.ThinkingEffort
 	}
+	if len(in.Attachments) > 0 {
+		payload["attachments"] = in.Attachments
+	}
 	if err := send(map[string]any{"type": "user_message", "payload": payload}); err != nil {
 		return ChatResult{}, fmt.Errorf("send user_message: %w", err)
 	}
 
 	result, err := u.readEvents(ctx, conn, gateway, onEvent)
+	result.ThreadID = threadID
 	if err != nil {
 		return result, err
 	}
+	if len(result.Artifacts) > 0 && in.ArtifactHandler != nil {
+		result.Files, err = in.ArtifactHandler(ctx, threadID, result.Artifacts)
+		if err != nil {
+			return result, fmt.Errorf("生成文件下载失败: %w", err)
+		}
+	}
 
-	if !u.cfg.KeepSessions {
+	if !u.cfg.KeepSessions && !in.KeepSession {
 		_ = send(map[string]any{"type": "session_delete", "payload": map[string]any{"session_id": threadID}})
 	}
 	return result, nil
@@ -310,6 +327,7 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 	toolOrder := make([]string, 0, 2)
 	toolSent := make(map[string]bool)
 	partialArgs := make(map[string]string)
+	nativeSeen := make(map[string]bool)
 
 	getTool := func(id, name string) *ToolCallState {
 		id = strings.TrimSpace(id)
@@ -433,6 +451,15 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 		}
 		if err := json.Unmarshal([]byte(jsonStr), &env); err != nil {
 			continue
+		}
+		switch env.Type {
+		case "tool_result", "text_complete", "message_complete", "artifact_created", "file_created":
+			for _, ref := range nativeArtifacts(env.Payload) {
+				if !nativeSeen[ref.Path] && len(result.Artifacts) < 20 {
+					nativeSeen[ref.Path] = true
+					result.Artifacts = append(result.Artifacts, ref)
+				}
+			}
 		}
 		switch env.Type {
 		case "text_delta":

@@ -11,6 +11,7 @@ import (
 // Session is the runtime view of one upstream account used by the WebSocket
 // transport.
 type Session struct {
+	AccountID        int64
 	JWT              string
 	WSHost           string
 	WSPath           string
@@ -35,6 +36,7 @@ func SessionFromAccount(a *store.Account, cfg *config.Config) *Session {
 		surface = "QUICK_WORK_DESKTOP_WINDOWS"
 	}
 	return &Session{
+		AccountID:        a.ID,
 		JWT:              a.JWT(),
 		WSHost:           a.WSHost,
 		WSPath:           a.WSPath,

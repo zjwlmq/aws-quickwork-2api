@@ -39,18 +39,30 @@ type Server struct {
 	attempts   map[string]loginAttempts
 	flows      map[string]pendingLogin
 	loginSlots chan struct{}
+	media      MediaConsole
 }
 
-func New(cfg *config.Config, st *store.Store, manager *accounts.Manager) (*Server, error) {
+type MediaConsole interface {
+	CreateVideoJob(http.ResponseWriter, *http.Request, string)
+	ListVideoJobs(http.ResponseWriter, *http.Request, string)
+	GetVideoJob(http.ResponseWriter, *http.Request, string)
+	VideoJobContent(http.ResponseWriter, *http.Request, string)
+}
+
+func New(cfg *config.Config, st *store.Store, manager *accounts.Manager, media ...MediaConsole) (*Server, error) {
 	if !cfg.Admin.Enabled {
 		return nil, errors.New("web console is disabled")
 	}
 	if _, _, _, err := parsePasswordHash(cfg.Admin.PasswordHash); err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, store: st, manager: manager,
+	s := &Server{cfg: cfg, store: st, manager: manager,
 		sessions: make(map[string]*session), attempts: make(map[string]loginAttempts),
-		flows: make(map[string]pendingLogin), loginSlots: make(chan struct{}, 2)}, nil
+		flows: make(map[string]pendingLogin), loginSlots: make(chan struct{}, 2)}
+	if len(media) > 0 {
+		s.media = media[0]
+	}
+	return s, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -66,6 +78,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/api/login-flows", s.requireSession(s.createFlow))
 	mux.HandleFunc("POST /admin/api/login-flows/{id}/callback", s.requireSession(s.submitCallback))
 	mux.HandleFunc("DELETE /admin/api/login-flows/{id}", s.requireSession(s.cancelFlow))
+	mux.HandleFunc("GET /admin/api/videos", s.requireSession(func(w http.ResponseWriter, r *http.Request, _ *session) {
+		if s.media == nil {
+			fail(w, 503, "视频服务未启用")
+			return
+		}
+		s.media.ListVideoJobs(w, r, "")
+	}))
+	mux.HandleFunc("POST /admin/api/videos", s.requireSession(func(w http.ResponseWriter, r *http.Request, _ *session) {
+		if s.media == nil {
+			fail(w, 503, "视频服务未启用")
+			return
+		}
+		s.media.CreateVideoJob(w, r, "admin")
+	}))
+	mux.HandleFunc("GET /admin/api/videos/{id}", s.requireSession(func(w http.ResponseWriter, r *http.Request, _ *session) {
+		if s.media == nil {
+			fail(w, 503, "视频服务未启用")
+			return
+		}
+		s.media.GetVideoJob(w, r, "")
+	}))
+	mux.HandleFunc("GET /admin/api/videos/{id}/content", s.requireSession(func(w http.ResponseWriter, r *http.Request, _ *session) {
+		if s.media == nil {
+			fail(w, 503, "视频服务未启用")
+			return
+		}
+		s.media.VideoJobContent(w, r, "")
+	}))
 	mux.HandleFunc("/admin/", s.static)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
