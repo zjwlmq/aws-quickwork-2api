@@ -396,10 +396,19 @@
               >
                 复制 VS Code 配置
               </button>
+              <button
+                class="button small"
+                id="copy-claude-settings"
+                type="button"
+              >
+                复制 Claude 设置
+              </button>
             </div>
             <p class="privacy-note">
-              终端中执行命令后运行 claude；VS Code 配置合并到用户 settings.json
-              后重新打开 Claude Code。配置使用上方 API Key。
+              PowerShell 命令创建独立的 quickwork.settings.json 并启动 Claude
+              Code。VS Code 配置合并到用户 settings.json 后重新打开会话；若
+              ~/.claude/settings.json 已有同名 env，需同步为“Claude
+              设置”中的值。配置使用上方 API Key。
             </p>
           </div>
         </section>

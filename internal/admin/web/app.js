@@ -585,10 +585,11 @@
   $("copy-claude-powershell").addEventListener("click", () => {
     const env = claudeEnvironment();
     if (!env) return;
+    const settings = JSON.stringify({ env, model: "smart" }, null, 2);
     copy(
-      Object.entries(env)
-        .map(([name, value]) => `$env:${name} = '${value.replace(/'/g, "''")}'`)
-        .join("\n") + "\nclaude",
+      "$quickworkClaudeDirectory = Join-Path $env:USERPROFILE '.claude'\nNew-Item -ItemType Directory -Force -Path $quickworkClaudeDirectory | Out-Null\n$quickworkClaudeSettings = Join-Path $quickworkClaudeDirectory 'quickwork.settings.json'\n@'\n" +
+        settings +
+        "\n'@ | Set-Content -LiteralPath $quickworkClaudeSettings -Encoding UTF8\nclaude --settings $quickworkClaudeSettings --model smart",
       $("copy-claude-powershell"),
     );
   });
@@ -607,6 +608,14 @@
       ),
       $("copy-claude-vscode"),
     );
+  });
+  $("copy-claude-settings").addEventListener("click", () => {
+    const env = claudeEnvironment();
+    if (env)
+      copy(
+        JSON.stringify({ env, model: "smart" }, null, 2),
+        $("copy-claude-settings"),
+      );
   });
   $("reveal-key").addEventListener("click", () => {
     const showing = $("api-key").type === "password";

@@ -422,10 +422,14 @@ $env:MAX_THINKING_TOKENS = '0'
 claude
 ```
 
-命令只影响当前终端及其启动的程序。在 Claude Code 中执行 `/status` 检查地址和认证来源。
+上面环境变量适用于未在设置文件中配置同名值的情况。设置文件中的 `env` 可覆盖终端环境变量。
+后台“复制 PowerShell 命令”会创建独立的 `~/.claude/quickwork.settings.json`，
+并用 `claude --settings "$env:USERPROFILE\.claude\quickwork.settings.json" --model smart` 启动，
+优先使用该配置。在 Claude Code 中执行 `/status` 检查地址和认证来源。
 VS Code 插件使用用户 `settings.json` 中的 `claudeCode.environmentVariables`，
 值为 `[{"name":"ANTHROPIC_BASE_URL","value":"https://your-domain.example"}, ...]`。
 复制按钮会提供完整的 JSON；合并现有配置，重开 Claude Code 会话后生效。
+若 `~/.claude/settings.json` 中已有同名 `env`，还需用“复制 Claude 设置”的内容同步该项。
 
 这些模式名路由到当前 Quick 账号，不能据此认定实际使用了某个 Claude 官方型号。
 此兼容层不提供 Anthropic 的缓存、签名思考块、服务端工具或延迟工具搜索。
