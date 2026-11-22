@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"quickwork-openai/internal/diagnostics"
 	"quickwork-openai/internal/store"
 )
 
@@ -219,17 +220,22 @@ func (s *Server) CreateVideoJob(w http.ResponseWriter, r *http.Request, owner st
 		return
 	}
 	release = false
-	go s.runVideo(j, attachments)
+	diagnostics.Event(r.Context(), "info", "video.job.queued", "job_id", j.ID, "model", j.Model, "seconds", seconds, "size", j.Size, "prompt_bytes", len(j.Prompt), "prompt_sha256", diagnostics.Fingerprint(j.Prompt), "attachments", attachmentMetadata(attachments))
+	go s.runVideo(context.WithoutCancel(r.Context()), j, attachments)
 	writeJSON(w, http.StatusAccepted, j)
 }
 
-func (s *Server) runVideo(j store.VideoJob, attachments []Attachment) {
+func (s *Server) runVideo(parent context.Context, j store.VideoJob, attachments []Attachment) {
 	defer func() { <-s.videoSlots }()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(diagnostics.With(parent, "job_id", j.ID), 30*time.Minute)
 	defer cancel()
+	started := time.Now()
+	diagnostics.Event(ctx, "info", "video.job.started")
 	j.Status = "in_progress"
 	j.InputJSON = "[]"
-	_ = s.store.UpdateVideo(ctx, &j)
+	if err := s.store.UpdateVideo(ctx, &j); err != nil {
+		diagnostics.Event(ctx, "error", "video.job.save_failed", "error", err)
+	}
 	finish := func(err error) {
 		j.CompletedAt = time.Now().Unix()
 		if err != nil {
@@ -238,17 +244,27 @@ func (s *Server) runVideo(j store.VideoJob, attachments []Attachment) {
 		} else {
 			j.Status = "completed"
 		}
-		saveCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
+		saveCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer done()
-		_ = s.store.UpdateVideo(saveCtx, &j)
+		if saveErr := s.store.UpdateVideo(saveCtx, &j); saveErr != nil {
+			diagnostics.Event(ctx, "error", "video.job.save_failed", "error", saveErr)
+		}
+		level := "info"
+		if err != nil {
+			level = "error"
+		}
+		diagnostics.Event(ctx, level, "video.job.finished", "status", j.Status, "duration_ms", time.Since(started).Milliseconds(), "file_id", j.FileID, "result_bytes", len(j.Result), "error", err)
 	}
 	prompt := fmt.Sprintf("请根据下面用户的描述，使用当前 Quick 会话中可用的视频制作工具，实际制作并交付一个 MP4 视频文件。视频长度 %s 秒，画面 %s；有参考图时应使用参考图。不要只返回脚本或制作步骤。请完成渲染后用 open_in_session_tab 展示文件，并在回复中提供 qw-file:// 文件链接。用户已经确认直接制作，不需要再询问方案。不要声称使用了当前账号未提供的模型或工具；如果无法制作，应明确说明原因。\n\n用户描述：\n%s", j.Seconds, j.Size, j.Prompt)
 	in := ChatInput{Prompt: prompt, Model: j.Model, Title: titleFor(j.Prompt), Attachments: attachments, KeepSession: true}
 	var res ChatResult
 	var lastErr error
-	for range s.maxAttempts(ctx) {
-		acct, err := s.accounts.Next(ctx)
+	for attempt := range s.maxAttempts(ctx) {
+		attemptCtx := diagnostics.With(ctx, "attempt", attempt+1)
+		diagnostics.Event(attemptCtx, "info", "video.attempt.started")
+		acct, err := s.accounts.Next(attemptCtx)
 		if err != nil {
+			diagnostics.Event(attemptCtx, "error", "video.attempt.account_failed", "error", err)
 			lastErr = err
 			break
 		}
@@ -256,13 +272,13 @@ func (s *Server) runVideo(j store.VideoJob, attachments []Attachment) {
 		in.ArtifactHandler = func(ctx context.Context, thread string, refs []NativeArtifact) ([]store.MediaFile, error) {
 			return s.cacheArtifacts(ctx, sess, j.Owner, thread, refs)
 		}
-		res, err = s.upstream.Chat(ctx, sess, in, nil)
+		res, err = s.upstream.Chat(attemptCtx, sess, in, nil)
 		if err == nil {
 			lastErr = nil
 			break
 		}
 		lastErr = err
-		s.accounts.ReportFailure(ctx, acct.ID, err)
+		s.accounts.ReportFailure(attemptCtx, acct.ID, err)
 		if ctx.Err() != nil {
 			break
 		}

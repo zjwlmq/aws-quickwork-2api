@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"quickwork-openai/internal/diagnostics"
 )
 
 type anthropicRequest struct {
@@ -271,9 +272,11 @@ func (s *Server) handleAnthropic(w http.ResponseWriter, r *http.Request) {
 		anthropicError(w, 400, "max_tokens must be positive")
 		return
 	}
-	w.Header().Set("request-id", "req_"+strings.ReplaceAll(uuid(), "-", ""))
+	if w.Header().Get("request-id") == "" {
+		w.Header().Set("request-id", "req_"+strings.ReplaceAll(uuid(), "-", ""))
+	}
 	w.Header().Set("X-Quickwork-Compatibility", "anthropic-messages")
-	log.Printf("anthropic request model=%s stream=%t client_tools=%d messages=%d", s.mapModel(input.Model), input.Stream, len(chat.Tools), len(chat.Messages))
+	diagnostics.Event(r.Context(), "info", "anthropic.request.converted", "requested_model", input.Model, "mapped_model", s.mapModel(input.Model), "stream", input.Stream, "client_tools", len(chat.Tools), "messages", len(chat.Messages), "requested_max_tokens", input.MaxTokens, "max_tokens_enforced", false, "system_present", input.System != nil, "tool_transport", "quick_text_rpc")
 	if strings.HasSuffix(r.URL.Path, "/count_tokens") {
 		// Quick has no public tokenizer. This local estimate is explicitly labelled
 		// and does not make an upstream request or pretend to use Claude's tokenizer.

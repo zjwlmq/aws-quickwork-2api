@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"quickwork-openai/internal/diagnostics"
 	"quickwork-openai/internal/store"
 )
 
@@ -164,9 +165,11 @@ func nativeDownloadURL(ctx context.Context, sess *Session, thread, nativePath st
 	r.Header.Set("Content-Type", "application/json")
 	res, err := nativeHTTP.Do(r)
 	if err != nil {
+		diagnostics.Event(ctx, "error", "media.download_url.failed", "error", err)
 		return "", errors.New("Quick 文件下载地址请求失败")
 	}
 	defer res.Body.Close()
+	diagnostics.Event(ctx, "debug", "media.download_url.response", "http_status", res.StatusCode, "upstream_request_id", res.Header.Get("X-Amzn-Requestid"))
 	if res.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("Quick 文件下载接口返回 HTTP %d", res.StatusCode)
 	}
@@ -200,7 +203,17 @@ func (s *Server) mediaURL(f *store.MediaFile) string {
 	return strings.TrimRight(s.cfg.Admin.PublicURL, "/") + "/v1/media/" + url.PathEscape(f.ID) + "?expires=" + strconv.FormatInt(expires, 10) + "&signature=" + sig
 }
 
-func (s *Server) cacheArtifacts(ctx context.Context, sess *Session, owner, thread string, refs []NativeArtifact) ([]store.MediaFile, error) {
+func (s *Server) cacheArtifacts(ctx context.Context, sess *Session, owner, thread string, refs []NativeArtifact) (cached []store.MediaFile, resultErr error) {
+	ctx = diagnostics.With(ctx, "account_id", sess.AccountID, "upstream_thread_id", thread)
+	started := time.Now()
+	stage := "initialize"
+	defer func() {
+		level := "info"
+		if resultErr != nil {
+			level = "error"
+		}
+		diagnostics.Event(ctx, level, "media.cache.finished", "stage", stage, "artifact_count", len(refs), "cached_count", len(cached), "duration_ms", time.Since(started).Milliseconds(), "error", resultErr)
+	}()
 	if s.store == nil || len(refs) == 0 {
 		return nil, nil
 	}
@@ -218,10 +231,13 @@ func (s *Server) cacheArtifacts(ctx context.Context, sess *Session, owner, threa
 			continue
 		}
 		if existing, err := s.store.FindMedia(ctx, owner, sess.AccountID, thread, ref.Path); err == nil {
+			diagnostics.Event(ctx, "debug", "media.cache.reused", "file_id", existing.ID)
 			existing.URL = s.mediaURL(existing)
 			files = append(files, *existing)
 			continue
 		}
+		stage = "download_url"
+		diagnostics.Event(ctx, "info", "media.cache.started", "native_path_sha256", diagnostics.Fingerprint(ref.Path), "artifact_kind", ref.Kind)
 		link, err := nativeDownloadURL(ctx, sess, thread, ref.Path)
 		if err != nil {
 			return nil, err
@@ -230,14 +246,18 @@ func (s *Server) cacheArtifacts(ctx context.Context, sess *Session, owner, threa
 		if err != nil {
 			return nil, err
 		}
+		stage = "download"
+		downloadStarted := time.Now()
 		res, err := mediaHTTPClient.Do(r)
 		if err != nil {
+			diagnostics.Event(ctx, "error", "media.download.failed", "error", err)
 			return nil, errors.New("Quick 生成文件下载失败")
 		}
 		if res.StatusCode != http.StatusOK {
 			res.Body.Close()
 			return nil, fmt.Errorf("生成文件下载返回 HTTP %d", res.StatusCode)
 		}
+		diagnostics.Event(ctx, "debug", "media.download.response", "http_status", res.StatusCode, "content_length", res.ContentLength, "content_type", res.Header.Get("Content-Type"))
 		if res.ContentLength > 256<<20 {
 			res.Body.Close()
 			return nil, errors.New("生成文件超过 256 MiB 下载限制")
@@ -248,13 +268,16 @@ func (s *Server) cacheArtifacts(ctx context.Context, sess *Session, owner, threa
 			res.Body.Close()
 			return nil, err
 		}
+		stage = "save_file"
 		size, copyErr := io.Copy(file, io.LimitReader(res.Body, (256<<20)+1))
 		closeErr := file.Close()
 		res.Body.Close()
 		if copyErr != nil || closeErr != nil || size == 0 || size > 256<<20 {
+			diagnostics.Event(ctx, "error", "media.file.save_failed", "file_id", id, "size_bytes", size, "read_error", copyErr, "close_error", closeErr)
 			_ = os.Remove(s.mediaDiskPath(id) + ".part")
 			return nil, errors.New("生成文件读取失败或超过大小限制")
 		}
+		diagnostics.Event(ctx, "info", "media.download.completed", "file_id", id, "size_bytes", size, "duration_ms", time.Since(downloadStarted).Milliseconds())
 		if err := os.Rename(s.mediaDiskPath(id)+".part", s.mediaDiskPath(id)); err != nil {
 			return nil, err
 		}
@@ -266,20 +289,24 @@ func (s *Server) cacheArtifacts(ctx context.Context, sess *Session, owner, threa
 			ct = "application/octet-stream"
 		}
 		if ct == "video/mp4" {
-			size, err = browserMP4(ctx, s.mediaDiskPath(id))
+			stage = "video_encoding"
+			size, err = browserMP4(diagnostics.With(ctx, "file_id", id), s.mediaDiskPath(id))
 			if err != nil {
 				_ = os.Remove(s.mediaDiskPath(id))
 				return nil, err
 			}
 		}
 		f := store.MediaFile{ID: id, Owner: owner, AccountID: sess.AccountID, ThreadID: thread, NativePath: ref.Path, Filename: path.Base(ref.Path), MIMEType: ct, Size: size}
+		stage = "save_metadata"
 		if err := s.store.SaveMedia(ctx, &f); err != nil {
 			_ = os.Remove(s.mediaDiskPath(id))
 			return nil, err
 		}
 		f.URL = s.mediaURL(&f)
 		files = append(files, f)
+		diagnostics.Event(ctx, "info", "media.cache.completed", "file_id", id, "size_bytes", size, "mime_type", ct)
 	}
+	stage = "complete"
 	return files, nil
 }
 

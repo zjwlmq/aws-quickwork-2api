@@ -17,6 +17,7 @@ import (
 
 	"quickwork-openai/internal/accounts"
 	"quickwork-openai/internal/config"
+	"quickwork-openai/internal/diagnostics"
 	"quickwork-openai/internal/oauth"
 	"quickwork-openai/internal/store"
 )
@@ -75,6 +76,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /admin/api/accounts/{id}", s.requireSession(s.toggleAccount))
 	mux.HandleFunc("DELETE /admin/api/accounts/{id}", s.requireSession(s.deleteAccount))
 	mux.HandleFunc("GET /admin/api/connection", s.requireSession(s.connection))
+	mux.HandleFunc("GET /admin/api/logs", s.requireSession(s.logs))
 	mux.HandleFunc("POST /admin/api/login-flows", s.requireSession(s.createFlow))
 	mux.HandleFunc("POST /admin/api/login-flows/{id}/callback", s.requireSession(s.submitCallback))
 	mux.HandleFunc("DELETE /admin/api/login-flows/{id}", s.requireSession(s.cancelFlow))
@@ -173,6 +175,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	valid := verifyPassword(s.cfg.Admin.PasswordHash, input.Password)
 	if !valid || input.Username != s.cfg.Admin.Username {
+		diagnostics.Event(r.Context(), "warn", "admin.login.failed", "peer_ip", ip)
 		fail(w, http.StatusUnauthorized, "用户名或密码不正确")
 		return
 	}
@@ -202,6 +205,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	delete(s.attempts, ip)
 	s.mu.Unlock()
 	s.setCookie(w, token, int(sessionLifetime.Seconds()))
+	diagnostics.Event(r.Context(), "info", "admin.login.succeeded", "peer_ip", ip)
 	s.sessionInfo(w, r, sess)
 }
 
@@ -328,6 +332,7 @@ func (s *Server) toggleAccount(w http.ResponseWriter, r *http.Request, sess *ses
 		fail(w, http.StatusInternalServerError, "更新账号失败")
 		return
 	}
+	diagnostics.Event(r.Context(), "info", "admin.account.toggled", "account_id", id, "disabled", *input.Disabled)
 	reply(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -342,6 +347,7 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request, sess *ses
 	} else if !deleted {
 		fail(w, http.StatusNotFound, "账号不存在")
 	} else {
+		diagnostics.Event(r.Context(), "info", "admin.account.deleted", "account_id", id)
 		reply(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }

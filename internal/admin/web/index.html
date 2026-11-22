@@ -30,6 +30,9 @@
         <rect x="3" y="5" width="18" height="14" rx="3" />
         <path d="m10 9 5 3-5 3z" />
       </symbol>
+      <symbol id="i-logs" viewBox="0 0 24 24">
+        <path d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h5" />
+      </symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24">
         <path d="M20 7a9 9 0 1 0 1 9M20 2v6h-6" />
       </symbol>
@@ -124,6 +127,10 @@
           <button class="nav-item" id="nav-videos" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-video" /></svg>
             <span>视频生成</span>
+          </button>
+          <button class="nav-item" id="nav-logs" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-logs" /></svg>
+            <span>诊断日志</span>
           </button>
         </nav>
         <div class="sidebar-bottom">
@@ -335,6 +342,73 @@
               </p>
               <div id="video-jobs" class="video-jobs"></div>
             </section>
+          </div>
+        </section>
+        <section id="logs-section" aria-label="诊断日志" hidden>
+          <div class="logs-panel">
+            <div class="logs-heading">
+              <div>
+                <h2>请求与任务追踪</h2>
+                <p class="form-hint">
+                  展开事件查看详情，按请求 ID
+                  串联上下文、账号、工具与文件处理过程。
+                </p>
+              </div>
+              <button id="export-logs" type="button" class="button">
+                导出筛选结果
+              </button>
+            </div>
+            <form id="logs-filter" class="logs-filter">
+              <div>
+                <label for="log-request">请求 ID</label
+                ><input
+                  id="log-request"
+                  type="search"
+                  maxlength="128"
+                  placeholder="req_…"
+                  autocomplete="off"
+                />
+              </div>
+              <div>
+                <label for="log-search">搜索内容</label
+                ><input
+                  id="log-search"
+                  type="search"
+                  maxlength="256"
+                  placeholder="事件、任务 ID、账号编号…"
+                  autocomplete="off"
+                />
+              </div>
+              <div>
+                <label for="log-level">最低级别</label
+                ><select id="log-level">
+                  <option value="">全部级别</option>
+                  <option value="info">INFO 及以上</option>
+                  <option value="warn">WARN 及以上</option>
+                  <option value="error">仅 ERROR</option>
+                </select>
+              </div>
+              <button type="submit" class="button primary" id="refresh-logs">
+                查询
+              </button>
+              <button type="button" class="button" id="clear-logs-filter">
+                重置
+              </button>
+            </form>
+            <div class="logs-meta">
+              <p id="log-status" class="form-hint" role="status">
+                正在读取日志…
+              </p>
+              <label class="log-auto"
+                ><input id="log-auto" type="checkbox" />每 10 秒更新</label
+              >
+            </div>
+            <div id="log-error" class="form-error" role="alert" hidden></div>
+            <div id="log-entries" class="log-entries"></div>
+            <p class="form-hint logs-note">
+              密钥、密码和下载签名已脱敏；对话、代码、工具参数及文件原始内容以大小和摘要记录。每次查询最多扫描最近
+              32 MiB，页面显示最多 500 条，导出最多 5000 条。
+            </p>
           </div>
         </section>
         <section

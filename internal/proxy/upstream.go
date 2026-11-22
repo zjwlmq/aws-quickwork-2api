@@ -3,8 +3,9 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"quickwork-openai/internal/config"
+	"quickwork-openai/internal/diagnostics"
 	"quickwork-openai/internal/store"
 )
 
@@ -88,7 +90,7 @@ type ChatResult struct {
 
 // Chat sends one prompt through the QuickWork chat bidi WebSocket. Text
 // deltas and completed tool calls are reported through onEvent.
-func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEvent EventFunc) (ChatResult, error) {
+func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEvent EventFunc) (result ChatResult, err error) {
 	if strings.TrimSpace(in.Prompt) == "" {
 		return ChatResult{}, fmt.Errorf("prompt is empty")
 	}
@@ -102,6 +104,15 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 	}
 	messageID := uuid()
 	traceID := uuid()
+	ctx = diagnostics.With(ctx, "account_id", sess.AccountID, "upstream_thread_id", threadID, "upstream_message_id", messageID, "upstream_trace_id", traceID)
+	started := time.Now()
+	defer func() {
+		level := "info"
+		if err != nil {
+			level = "error"
+		}
+		diagnostics.Event(ctx, level, "upstream.turn.finished", "duration_ms", time.Since(started).Milliseconds(), "text_bytes", len(result.Text), "native_tools", len(result.ToolCalls), "artifacts", len(result.Artifacts), "cached_files", len(result.Files), "usage", usageMap(result.Usage), "error", err, "context_error", ctx.Err())
+	}()
 
 	wsURL, headers, gateway, err := u.dialInfo(sess)
 	if err != nil {
@@ -110,6 +121,9 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 
 	dialer := *websocket.DefaultDialer
 	dialer.HandshakeTimeout = 20 * time.Second
+	parsedURL, _ := url.Parse(wsURL)
+	diagnostics.Event(ctx, "info", "upstream.connection.started", "host", parsedURL.Hostname(), "gateway", gateway, "handshake_timeout_ms", 20000)
+	dialStarted := time.Now()
 	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
 	if err != nil {
 		detail := ""
@@ -119,6 +133,7 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		return ChatResult{}, fmt.Errorf("upstream WebSocket dial failed%s: %w", detail, err)
 	}
 	defer conn.Close()
+	diagnostics.Event(ctx, "info", "upstream.connection.established", "duration_ms", time.Since(dialStarted).Milliseconds(), "http_status", resp.StatusCode, "upstream_request_id", resp.Header.Get("X-Amzn-Requestid"))
 
 	writeMu := &sync.Mutex{}
 	encode := func(v any) ([]byte, error) {
@@ -145,7 +160,17 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		}
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return conn.WriteMessage(messageType, frame)
+		err = conn.WriteMessage(messageType, frame)
+		kind := ""
+		if obj, ok := v.(map[string]any); ok {
+			kind, _ = obj["type"].(string)
+		}
+		level := "debug"
+		if err != nil {
+			level = "error"
+		}
+		diagnostics.Event(ctx, level, "upstream.message.sent", "event_type", kind, "frame_bytes", len(frame), "error", err)
+		return err
 	}
 
 	// Keep the socket alive while the agent is thinking.
@@ -162,8 +187,11 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 				return
 			case <-ticker.C:
 				writeMu.Lock()
-				_ = conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second))
+				pingErr := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second))
 				writeMu.Unlock()
+				if pingErr != nil {
+					diagnostics.Event(ctx, "warn", "upstream.ping.failed", "error", pingErr)
+				}
 			}
 		}
 	}()
@@ -230,7 +258,8 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		return ChatResult{}, fmt.Errorf("send user_message: %w", err)
 	}
 
-	result, err := u.readEvents(ctx, conn, gateway, onEvent)
+	diagnostics.Event(ctx, "info", "upstream.context.sent", "prompt_bytes", len(in.Prompt), "custom_prompt_present", in.SystemPrompt != "", "custom_prompt_bytes", len(in.SystemPrompt), "system_wire_field", "custom_prompt", "attachment_count", len(in.Attachments), "model", in.Model)
+	result, err = u.readEvents(ctx, conn, gateway, onEvent)
 	result.ThreadID = threadID
 	if err != nil {
 		return result, err
@@ -321,6 +350,14 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 	var text strings.Builder
 	sawMessageComplete := false
 	var completeDeadline time.Time
+	started := time.Now()
+	sequence := 0
+	eventCounts := map[string]int{}
+	finishReason := "unknown"
+	firstText := true
+	defer func() {
+		diagnostics.Event(ctx, "info", "upstream.stream.summary", "duration_ms", time.Since(started).Milliseconds(), "event_count", sequence, "event_counts", eventCounts, "finish_reason", finishReason, "text_bytes", text.Len(), "saw_message_complete", sawMessageComplete)
+	}()
 
 	toolCalls := make(map[string]*ToolCallState)
 	toolOrder := make([]string, 0, 2)
@@ -401,6 +438,7 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 	for {
 		select {
 		case <-ctx.Done():
+			finishReason = "context_done"
 			res, _ := finish()
 			return res, ctx.Err()
 		default:
@@ -410,12 +448,20 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 			if remaining := time.Until(completeDeadline); remaining > 0 {
 				readWait = remaining
 			} else {
+				finishReason = "message_complete_grace_expired"
 				return finish()
 			}
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(readWait))
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
+			finishReason = "socket_read_error"
+			if expectedStreamEnd(ctx, err, sawMessageComplete, completeDeadline) {
+				finishReason = "message_complete_grace_expired_or_closed"
+				diagnostics.Event(ctx, "info", "upstream.stream.closed", "finish_reason", finishReason, "read_wait_ms", readWait.Milliseconds())
+			} else {
+				diagnostics.Event(ctx, "warn", "upstream.socket.read_failed", "error", err, "read_wait_ms", readWait.Milliseconds(), "partial_accepted", text.Len() > 0 || len(toolOrder) > 0, "saw_message_complete", sawMessageComplete)
+			}
 			res, emitErr := finish()
 			if emitErr != nil {
 				return res, emitErr
@@ -436,7 +482,7 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 				jsonStr, err = aidpDecode(data)
 			}
 			if err != nil {
-				log.Printf("upstream frame decode: %v", err)
+				diagnostics.Event(ctx, "warn", "upstream.frame.decode_failed", "frame_bytes", len(data), "gateway", gateway, "error", err)
 				continue
 			}
 		}
@@ -449,7 +495,13 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 			ErrorCode string          `json:"error_code"`
 		}
 		if err := json.Unmarshal([]byte(jsonStr), &env); err != nil {
+			diagnostics.Event(ctx, "warn", "upstream.event.decode_failed", "frame_bytes", len(data), "error", err)
 			continue
+		}
+		sequence++
+		eventCounts[env.Type]++
+		if diagnostics.Enabled("debug") {
+			diagnostics.Event(ctx, "debug", "upstream.event.received", "sequence", sequence, "event_type", env.Type, "frame_bytes", len(data), "since_start_ms", time.Since(started).Milliseconds(), "metadata", nativeEventMetadata(env.Payload))
 		}
 		switch env.Type {
 		case "tool_result", "text_complete", "message_complete", "artifact_created", "file_created":
@@ -467,6 +519,10 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 				continue
 			}
 			text.WriteString(delta)
+			if firstText {
+				firstText = false
+				diagnostics.Event(ctx, "info", "upstream.first_text", "latency_ms", time.Since(started).Milliseconds())
+			}
 			if onEvent != nil {
 				if err := onEvent(StreamEvent{Type: "text", Text: delta}); err != nil {
 					res, _ := finish()
@@ -590,6 +646,11 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 			} else {
 				tc.Status = p.Status
 			}
+			level := "info"
+			if tc.Status == "error" {
+				level = "warn"
+			}
+			diagnostics.Event(ctx, level, "upstream.tool.result", "tool_id", tc.ID, "tool_name", tc.Name, "tool_status", tc.Status, "arguments_bytes", len(tc.Arguments), "result_bytes", len(tc.Result), "result_sha256", diagnostics.Fingerprint(tc.Result), "error_message", p.Error)
 			if err := emitTool(tc); err != nil {
 				res, _ := finish()
 				return res, err
@@ -613,6 +674,7 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 			if tc.Result == "" {
 				tc.Result = p.Message
 			}
+			diagnostics.Event(ctx, "warn", "upstream.tool.error", "tool_id", tc.ID, "tool_name", tc.Name, "error_message", tc.Result)
 			if err := emitTool(tc); err != nil {
 				res, _ := finish()
 				return res, err
@@ -722,10 +784,13 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 				completeDeadline = time.Now().Add(5 * time.Second)
 			}
 		case "error", "session_error", "stream_error", "turn_failed":
+			finishReason = env.Type
+			diagnostics.Event(ctx, "error", "upstream.error", "event_type", env.Type, "error_code", env.ErrorCode, "error_message", errorText(env.Payload, env.Error, env.ErrorCode))
 			res, _ := finish()
 			return res, fmt.Errorf("upstream %s: %s", env.Type, errorText(env.Payload, env.Error, env.ErrorCode))
 		default:
 			if terminal[env.Type] {
+				finishReason = env.Type
 				return finish()
 			}
 			if env.Type == "ping" {
@@ -737,6 +802,16 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 			}
 		}
 	}
+}
+
+// The existing reader deliberately waits five seconds after message_complete
+// for possible continuation. Its own grace timeout is a successful finish.
+func expectedStreamEnd(ctx context.Context, err error, complete bool, deadline time.Time) bool {
+	if ctx.Err() != nil || !complete || deadline.IsZero() {
+		return false
+	}
+	var networkErr net.Error
+	return (errors.As(err, &networkErr) && networkErr.Timeout() && !time.Now().Before(deadline)) || websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway)
 }
 
 func deltaText(raw json.RawMessage) string {

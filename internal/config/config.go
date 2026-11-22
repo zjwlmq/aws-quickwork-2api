@@ -60,6 +60,13 @@ type Admin struct {
 	PublicURL    string `json:"public_url"`
 }
 
+type Logging struct {
+	Level   string `json:"level"`
+	File    string `json:"file"`
+	MaxMB   int    `json:"max_mb"`
+	Backups int    `json:"backups"`
+}
+
 // Config is the server configuration stored in config.json.
 type Config struct {
 	Addr             string   `json:"addr"`
@@ -80,6 +87,7 @@ type Config struct {
 	KeepSessions     bool     `json:"keep_sessions"`
 	OAuth            OAuth    `json:"oauth"`
 	Admin            Admin    `json:"admin"`
+	Logging          Logging  `json:"logging"`
 
 	// Path is the absolute config file path; not serialized.
 	Path string `json:"-"`
@@ -100,6 +108,7 @@ func Default() Config {
 		Surface:        "QUICK_WORK_DESKTOP_WINDOWS",
 		Timezone:       "UTC",
 		Locale:         "en-US",
+		Logging:        Logging{Level: "info", File: "data/logs/quickwork.jsonl", MaxMB: 20, Backups: 5},
 		OAuth: OAuth{
 			Provider:     "social",
 			BuildStage:   "prod",
@@ -142,6 +151,9 @@ func Load(configPath string) (*Config, error) {
 	if !filepath.IsAbs(cfg.Database) {
 		cfg.Database = filepath.Join(filepath.Dir(abs), cfg.Database)
 	}
+	if !filepath.IsAbs(cfg.Logging.File) {
+		cfg.Logging.File = filepath.Join(filepath.Dir(abs), cfg.Logging.File)
+	}
 	return &cfg, nil
 }
 
@@ -159,6 +171,15 @@ func write(path string, cfg *Config) error {
 
 func applyDefaults(c *Config) {
 	d := Default()
+	if c.Logging.Level == "" {
+		c.Logging.Level = d.Logging.Level
+	}
+	if c.Logging.File == "" {
+		c.Logging.File = d.Logging.File
+	}
+	if c.Logging.MaxMB == 0 {
+		c.Logging.MaxMB = d.Logging.MaxMB
+	}
 	if strings.TrimSpace(c.Addr) == "" {
 		c.Addr = d.Addr
 	}
@@ -207,6 +228,18 @@ func applyDefaults(c *Config) {
 }
 
 func (c *Config) validate() error {
+	c.Logging.Level = strings.ToLower(c.Logging.Level)
+	switch c.Logging.Level {
+	case "debug", "info", "warn", "error", "off":
+	default:
+		return errors.New("logging.level must be debug, info, warn, error or off")
+	}
+	if c.Logging.MaxMB < 1 || c.Logging.MaxMB > 100 {
+		return errors.New("logging.max_mb must be 1-100")
+	}
+	if c.Logging.Backups < 0 || c.Logging.Backups > 10 {
+		return errors.New("logging.backups must be 0-10")
+	}
 	if c.Admin.Enabled {
 		if c.Admin.Username == "" || c.Admin.PasswordHash == "" {
 			return errors.New("admin.username and admin.password_hash are required")

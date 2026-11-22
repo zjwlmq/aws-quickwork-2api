@@ -16,6 +16,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"quickwork-openai/internal/diagnostics"
 )
 
 const maxMediaBytes = 50 << 20
@@ -131,9 +133,11 @@ func readMedia(ctx context.Context, source string, limit int64) ([]byte, string,
 	}
 	res, err := mediaHTTPClient.Do(r)
 	if err != nil {
+		diagnostics.Event(ctx, "warn", "media.input.download_failed", "host", u.Hostname(), "error", err)
 		return nil, "", errors.New("媒体下载失败：请确认地址可从服务器公开访问")
 	}
 	defer res.Body.Close()
+	diagnostics.Event(ctx, "debug", "media.input.download_response", "host", u.Hostname(), "http_status", res.StatusCode, "content_length", res.ContentLength, "content_type", res.Header.Get("Content-Type"))
 	if res.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("媒体下载返回 HTTP %d", res.StatusCode)
 	}
@@ -281,6 +285,7 @@ func prepareMedia(ctx context.Context, messages []Message) ([]Message, []Attachm
 					return nil, nil, errors.New("所有附件的总大小不能超过 50 MiB")
 				}
 				attachments = append(attachments, a)
+				diagnostics.Event(ctx, "info", "media.input.prepared", "message_index", i, "attachment_index", len(attachments), "type", a.Type, "size_bytes", a.Size, "mime_type", a.MIMEType, "sha256", a.ContentSHA256)
 				updated = append(updated, map[string]any{"type": "text", "text": "\n[附件 " + a.Name + "]\n"})
 			case "video_url", "input_video", "video":
 				return nil, nil, errors.New("暂未接通视频内容输入；视频生成请使用 /v1/videos")

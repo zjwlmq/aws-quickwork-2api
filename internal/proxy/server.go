@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"quickwork-openai/internal/store"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"quickwork-openai/internal/accounts"
 	"quickwork-openai/internal/config"
+	"quickwork-openai/internal/diagnostics"
 )
 
 type Server struct {
@@ -73,6 +73,7 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Api-Key, X-Thread-Id, Anthropic-Version, Anthropic-Beta, Anthropic-Dangerous-Direct-Browser-Access")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, request-id, X-Thread-Id")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -127,11 +128,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "n > 1 is not supported")
 		return
 	}
+	logChatRequest(r.Context(), &req)
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout.Duration())
 	defer cancel()
 	prepared, attachments, err := prepareMedia(ctx, req.Messages)
 	if err != nil {
+		diagnostics.Event(ctx, "warn", "chat.media.prepare_failed", "error", err)
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_media", err.Error())
 		return
 	}
@@ -177,13 +180,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		SystemPrompt: systemPromptText,
 		Attachments:  attachments,
 	}
+	ctx = diagnostics.With(ctx, "completion_id", id)
+	logPreparedContext(ctx, in, bridgeActive, choiceMode, choiceName)
 
 	if !req.Stream {
 		var res ChatResult
 		var lastErr error
-		for range s.maxAttempts(ctx) {
-			acct, err := s.accounts.Next(ctx)
+		for attempt := range s.maxAttempts(ctx) {
+			attemptCtx := diagnostics.With(ctx, "attempt", attempt+1)
+			diagnostics.Event(attemptCtx, "info", "chat.attempt.started")
+			acct, err := s.accounts.Next(attemptCtx)
 			if err != nil {
+				diagnostics.Event(attemptCtx, "error", "chat.attempt.account_failed", "error", err)
 				lastErr = err
 				break
 			}
@@ -193,17 +201,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				return s.cacheArtifacts(ctx, sess, owner, thread, refs)
 			}
 			if err := sess.validate(); err != nil {
-				s.accounts.ReportFailure(ctx, acct.ID, err)
+				s.accounts.ReportFailure(attemptCtx, acct.ID, err)
 				lastErr = err
 				continue
 			}
-			res, err = s.upstream.Chat(ctx, sess, in, nil)
+			res, err = s.upstream.Chat(attemptCtx, sess, in, nil)
 			if err == nil {
 				lastErr = nil
 				break
 			}
 			lastErr = err
-			s.accounts.ReportFailure(ctx, acct.ID, err)
+			s.accounts.ReportFailure(attemptCtx, acct.ID, err)
 			if ctx.Err() != nil {
 				break
 			}
@@ -228,6 +236,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if len(toolCalls) == 0 {
 			toolCalls = filterToolCalls(res.ToolCalls, allowedTools, choiceMode, choiceName, parallelTools)
 		}
+		for _, tc := range toolCalls {
+			logClientCall(ctx, tc.ID, tc.Function.Name, tc.Function.Arguments)
+		}
 		if strings.TrimSpace(text) == "" && len(toolCalls) == 0 && len(res.Files) == 0 {
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "upstream returned no text or tool calls")
 			return
@@ -248,6 +259,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if len(bridgeReplies) > 0 || (strings.TrimSpace(text) == "" && len(toolCalls) > 0) {
 			finish = "tool_calls"
 		}
+		diagnostics.Event(ctx, "info", "chat.response.completed", "stream", false, "finish_reason", finish, "text_bytes", len(text), "client_tool_calls", len(toolCalls), "files", len(res.Files), "usage", usageMap(res.Usage))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":      id,
 			"object":  "chat.completion",
@@ -317,6 +329,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeStreamError := func(message string) {
+		diagnostics.Event(ctx, "error", "chat.response.stream_error", "error_message", message, "stream_started", started)
 		writePayload(map[string]any{"error": map[string]any{
 			"message": message,
 			"type":    "upstream_error",
@@ -348,6 +361,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				args = "{}"
 			}
 			sentArgs[tc.ID] = args
+			logClientCall(ctx, tc.ID, tc.Name, args)
 			writeChunk(map[string]any{"tool_calls": []map[string]any{{
 				"index": idx,
 				"id":    tc.ID,
@@ -385,9 +399,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	var res ChatResult
 	var lastErr error
-	for range s.maxAttempts(ctx) {
-		acct, err := s.accounts.Next(ctx)
+	for attempt := range s.maxAttempts(ctx) {
+		attemptCtx := diagnostics.With(ctx, "attempt", attempt+1)
+		diagnostics.Event(attemptCtx, "info", "chat.attempt.started")
+		acct, err := s.accounts.Next(attemptCtx)
 		if err != nil {
+			diagnostics.Event(attemptCtx, "error", "chat.attempt.account_failed", "error", err)
 			lastErr = err
 			break
 		}
@@ -397,11 +414,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return s.cacheArtifacts(ctx, sess, owner, thread, refs)
 		}
 		if err := sess.validate(); err != nil {
-			s.accounts.ReportFailure(ctx, acct.ID, err)
+			s.accounts.ReportFailure(attemptCtx, acct.ID, err)
 			lastErr = err
 			continue
 		}
-		res, err = s.upstream.Chat(ctx, sess, in, func(ev StreamEvent) error {
+		res, err = s.upstream.Chat(attemptCtx, sess, in, func(ev StreamEvent) error {
 			switch ev.Type {
 			case "text":
 				if ev.Text == "" {
@@ -428,7 +445,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		lastErr = err
-		s.accounts.ReportFailure(ctx, acct.ID, err)
+		s.accounts.ReportFailure(attemptCtx, acct.ID, err)
 		if started || ctx.Err() != nil {
 			break
 		}
@@ -472,6 +489,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				writeChunk(map[string]any{"content": text}, nil)
 			}
 			for i, reply := range replies {
+				logClientCall(ctx, reply.ID, reply.Name, reply.Arguments)
 				writeChunk(map[string]any{"tool_calls": []map[string]any{{
 					"index": i,
 					"id":    reply.ID,
@@ -493,6 +511,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			writeChunk(map[string]any{"content": text}, nil)
 			writeChunk(map[string]any{}, "stop")
 		}
+		finish := "stop"
+		if len(replies) > 0 {
+			finish = "tool_calls"
+		}
+		diagnostics.Event(ctx, "info", "chat.response.completed", "stream", true, "finish_reason", finish, "text_bytes", len(text), "client_tool_calls", len(replies), "files", len(res.Files), "usage", usageMap(res.Usage))
 		if req.StreamOptions != nil && req.StreamOptions.IncludeUsage {
 			writePayload(map[string]any{
 				"id":      id,
@@ -521,6 +544,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if !sawText && sawTool {
 		finish = "tool_calls"
 	}
+	diagnostics.Event(ctx, "info", "chat.response.completed", "stream", true, "finish_reason", finish, "text_bytes", len(res.Text), "client_tool_calls", toolIndex, "files", len(res.Files), "usage", usageMap(res.Usage))
 	writeChunk(map[string]any{}, finish)
 	if req.StreamOptions != nil && req.StreamOptions.IncludeUsage {
 		writePayload(map[string]any{
@@ -561,7 +585,6 @@ func (s *Server) mapModel(model string) string {
 	case "":
 		return s.cfg.DefaultModel
 	default:
-		log.Printf("unknown model %q, using %s", model, s.cfg.DefaultModel)
 		return s.cfg.DefaultModel
 	}
 }

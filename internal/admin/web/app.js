@@ -10,6 +10,7 @@
     page: "accounts",
     loading: false,
     videos: [],
+    logs: [],
   };
   const statusLabels = {
     ready: "可用",
@@ -20,6 +21,8 @@
   let toastTimer;
   let videoPollTimer;
   let videoLoadVersion = 0;
+  let logPollTimer;
+  let logLoadVersion = 0;
   function errorAt(id, message) {
     $(id).textContent = message || "";
     $(id).hidden = !message;
@@ -81,6 +84,10 @@
     state.flow = null;
     state.videos = [];
     clearTimeout(videoPollTimer);
+    clearTimeout(logPollTimer);
+    logLoadVersion++;
+    state.logs = [];
+    $("log-entries").replaceChildren();
     videoLoadVersion++;
     $("video-jobs").replaceChildren();
     $("video-prompt").value = "";
@@ -106,11 +113,13 @@
       session.username === "admin" ? "管理员" : session.username;
     errorAt("login-error", "");
     navigate(
-      location.hash === "#videos"
-        ? "videos"
-        : location.hash === "#connection"
-          ? "connection"
-          : "accounts",
+      location.hash === "#logs"
+        ? "logs"
+        : location.hash === "#videos"
+          ? "videos"
+          : location.hash === "#connection"
+            ? "connection"
+            : "accounts",
     );
   }
   function escape(value) {
@@ -220,28 +229,36 @@
   }
   function navigate(page) {
     videoLoadVersion++;
+    logLoadVersion++;
     state.page = page;
     $("accounts-section").hidden = page !== "accounts";
     $("header-actions").hidden = page !== "accounts";
     $("key-details").hidden = page !== "connection";
     $("videos-section").hidden = page !== "videos";
-    $("connection-panel").hidden = page === "videos";
+    $("logs-section").hidden = page !== "logs";
+    $("connection-panel").hidden = page === "videos" || page === "logs";
     $("page-title").textContent =
       page === "accounts"
         ? "账号管理"
         : page === "videos"
           ? "视频生成"
-          : "接入信息";
+          : page === "logs"
+            ? "诊断日志"
+            : "接入信息";
     $("page-description").textContent =
       page === "accounts"
         ? "管理 Amazon Quick 授权，账号自动轮询使用。"
         : page === "videos"
           ? "通过 Quick 聊天制作视频，查看任务进度与成片。"
-          : "在 OpenAI 兼容客户端中使用此服务。";
+          : page === "logs"
+            ? "按请求查看完整处理过程，定位失败阶段与上游异常。"
+            : "在 OpenAI 兼容客户端中使用此服务。";
     history.replaceState(null, "", "#" + page);
     clearTimeout(videoPollTimer);
+    clearTimeout(logPollTimer);
     if (page === "videos") loadVideos();
-    for (const name of ["accounts", "connection", "videos"]) {
+    if (page === "logs") loadLogs();
+    for (const name of ["accounts", "connection", "videos", "logs"]) {
       $("nav-" + name).classList.toggle("selected", name === page);
       if (name === page) $("nav-" + name).setAttribute("aria-current", "page");
       else $("nav-" + name).removeAttribute("aria-current");
@@ -438,6 +455,145 @@
   });
   $("refresh-videos").addEventListener("click", loadVideos);
   $("nav-videos").addEventListener("click", () => navigate("videos"));
+  $("nav-logs").addEventListener("click", () => navigate("logs"));
+  function logQuery(limit) {
+    return new URLSearchParams({
+      request_id: $("log-request").value.trim(),
+      search: $("log-search").value.trim(),
+      level: $("log-level").value,
+      limit: String(limit),
+    });
+  }
+  function renderLogs(requestID) {
+    const root = $("log-entries");
+    const opened = new Set(
+      Array.from(
+        root.querySelectorAll("details[open]"),
+        (node) => node.dataset.entryId,
+      ),
+    );
+    const entries = requestID ? [...state.logs].reverse() : state.logs;
+    if (!entries.length) {
+      root.innerHTML =
+        '<p class="logs-empty">没有匹配的日志。可调整筛选条件，或发起一次 API 请求后重新查询。</p>';
+      return;
+    }
+    const nodes = entries.map((entry) => {
+      const node = document.createElement("details");
+      node.className = "log-entry";
+      node.dataset.entryId = entry.entry_id;
+      node.open = opened.has(entry.entry_id);
+      const level = ["DEBUG", "INFO", "WARN", "ERROR"].includes(entry.level)
+        ? entry.level
+        : "INFO";
+      const time = new Date(entry.time);
+      const timeText = Number.isNaN(time.valueOf())
+        ? entry.time
+        : new Intl.DateTimeFormat("zh-CN", {
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+          }).format(time) +
+          "." +
+          String(time.getMilliseconds()).padStart(3, "0");
+      const hints = [
+        entry.request_id,
+        entry.account_id ? `账号 ${entry.account_id}` : null,
+        entry.attempt ? `第 ${entry.attempt} 次尝试` : null,
+        entry.duration_ms !== undefined ? `${entry.duration_ms} ms` : null,
+        entry.status ? `状态 ${entry.status}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      node.innerHTML = `<summary><span class="log-time">${escape(timeText)}</span><span class="log-level ${level.toLowerCase()}">${level}</span><span class="log-event">${escape(entry.event)}<small>${escape(hints)}</small></span></summary><div class="log-detail"><div class="log-detail-actions">${entry.request_id ? '<button type="button" class="text-button" data-log-trace>查看此请求全部事件</button>' : ""}<button type="button" class="text-button" data-log-copy>复制事件 JSON</button></div><pre>${escape(JSON.stringify(entry, null, 2))}</pre></div>`;
+      node.querySelector("[data-log-trace]")?.addEventListener("click", () => {
+        $("log-request").value = entry.request_id;
+        $("log-search").value = "";
+        $("log-level").value = "";
+        loadLogs();
+      });
+      node
+        .querySelector("[data-log-copy]")
+        .addEventListener("click", (event) =>
+          copy(JSON.stringify(entry, null, 2), event.currentTarget),
+        );
+      return node;
+    });
+    root.replaceChildren(...nodes);
+  }
+  async function loadLogs() {
+    clearTimeout(logPollTimer);
+    const version = ++logLoadVersion;
+    const query = logQuery(500);
+    $("log-status").textContent = "正在读取日志…";
+    errorAt("log-error", "");
+    try {
+      const result = await api("/logs?" + query);
+      if (version !== logLoadVersion || !state.session || state.page !== "logs")
+        return;
+      state.logs = result.entries;
+      renderLogs(query.get("request_id"));
+      const order = query.get("request_id") ? "按时间正序" : "最新在前";
+      $("log-status").textContent =
+        `${result.entries.length} 条 · ${order} · ${result.configured_level.toUpperCase()} · 每文件 ${result.max_mb} MiB / ${result.backups} 个备份${result.truncated ? " · 已达显示或扫描上限，可缩小筛选范围" : ""}`;
+      if (result.write_error)
+        errorAt("log-error", "日志写入异常：" + result.write_error);
+    } catch (error) {
+      if (version === logLoadVersion && state.page === "logs")
+        errorAt("log-error", error.message);
+    } finally {
+      if (
+        version === logLoadVersion &&
+        state.session &&
+        state.page === "logs" &&
+        $("log-auto").checked
+      )
+        logPollTimer = setTimeout(loadLogs, 10000);
+    }
+  }
+  $("logs-filter").addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadLogs();
+  });
+  $("clear-logs-filter").addEventListener("click", () => {
+    $("log-request").value = "";
+    $("log-search").value = "";
+    $("log-level").value = "";
+    loadLogs();
+  });
+  $("log-auto").addEventListener("change", () => {
+    clearTimeout(logPollTimer);
+    if ($("log-auto").checked) loadLogs();
+  });
+  $("export-logs").addEventListener("click", async () => {
+    const button = $("export-logs");
+    busy(button, true, "正在导出…");
+    try {
+      const response = await fetch(
+        "/admin/api/logs?" + logQuery(5000) + "&download=1",
+        { credentials: "same-origin", cache: "no-store" },
+      );
+      if (!response.ok) throw new Error("导出失败，请重新登录或稍后重试");
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "quickwork-diagnostics.jsonl";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast(
+        response.headers.get("X-Log-Truncated") === "true"
+          ? "已导出，结果达到条数或扫描上限"
+          : "诊断日志已导出",
+      );
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      busy(button, false);
+    }
+  });
   async function copy(text, button) {
     if (!text) {
       toast("暂无可复制的内容", true);

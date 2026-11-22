@@ -443,6 +443,45 @@ VS Code 插件使用用户 `settings.json` 中的 `claudeCode.environmentVariabl
 Token 计数使用本地估算，响应带 `X-Token-Count-Method: estimate`，不是 Claude tokenizer 的准确计数。
 语音、图片理解和长上下文能力仍取决于上游账号；该接口不代表完整 Anthropic API 实现。
 
+## 诊断日志（此部署扩展）
+
+后台 `/admin/#logs` 提供日志查询、请求追踪、级别筛选、内容搜索、自动更新和 JSONL 导出。
+只有管理员登录会话可以读取日志；代理 API Key 不能访问此入口。
+每个 API 响应都包含同一个 `X-Request-ID` / `request-id`，复制该值到后台“请求 ID”，
+即可按时间正序查看同一次请求的处理过程。后台视频任务会沿用提交请求的 ID，另带 `job_id`。
+
+```json
+"logging": {
+  "level": "debug",
+  "file": "data/logs/quickwork.jsonl",
+  "max_mb": 20,
+  "backups": 5
+}
+```
+
+`level` 可选 `debug`、`info`（默认）、`warn`、`error`、`off`，修改配置后重启服务生效。
+`debug` 包含逐条上游事件的类型、顺序、字段结构与字节数；`info` 记录关键处理阶段。
+日志同时输出到标准输出与 JSONL 文件，路径相对配置文件目录解析。
+示例最多保存当前文件和 5 个轮转备份，每个 20 MiB；文件权限为 0600。
+后台每次查询最多扫描最近 32 MiB，页面显示最多 500 条，导出最多 5000 条，达到上限会提示。
+超出后台扫描范围时，可在服务器直接搜索轮转文件。
+
+记录内容包括：消息角色统计和摘要、`custom_prompt` 是否存在及长度、工具定义摘要、
+账号选择/刷新/重试、上游 thread/message/trace ID、WebSocket 连接和事件、首字节与首文本耗时、
+真实上游用量、客户端工具调用、附件下载/缓存、视频任务和 ffmpeg 的失败阶段与错误。
+流式请求即使已返回 HTTP 200，后续错误仍会单独记录，并计入访问日志的 `error_events`。
+
+不保存原始请求/响应正文、代码、工具参数/结果和文件内容；以大小与 SHA-256 摘要辅助比对。
+错误详情会保留，凭据、Bearer、已知账号 Token、密码和 URL 查询参数会脱敏。
+`debug` 的逐消息详情最多记录开头和结尾各 50 条；数组最多 100 项，字符串最多 2048 字节，
+单条事件最多 64 KiB，超出会截断或改为概要。
+日志开始记录后才有历史，不能补回之前的请求。
+
+```bash
+journalctl -u quickwork-openai.service -f -o cat
+tail -f /opt/aws-quickwork-2api/data/logs/quickwork.jsonl
+```
+
 ## License
 
 本项目采用 [GNU General Public License v3.0](LICENSE) 授权。

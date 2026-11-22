@@ -21,6 +21,7 @@ import (
 	"quickwork-openai/internal/accounts"
 	"quickwork-openai/internal/admin"
 	"quickwork-openai/internal/config"
+	"quickwork-openai/internal/diagnostics"
 	"quickwork-openai/internal/oauth"
 	"quickwork-openai/internal/proxy"
 	"quickwork-openai/internal/store"
@@ -136,6 +137,14 @@ func serve(args []string) int {
 		fmt.Fprintln(os.Stderr, "config:", err)
 		return 1
 	}
+	diagnosticLog, err := diagnostics.Open(diagnostics.Options{Level: cfg.Logging.Level, File: cfg.Logging.File, MaxMB: cfg.Logging.MaxMB, Backups: cfg.Logging.Backups, Stdout: os.Stdout})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "logging:", err)
+		return 1
+	}
+	diagnostics.SetDefault(diagnosticLog)
+	defer func() { diagnostics.SetDefault(nil); _ = diagnosticLog.Close() }()
+	diagnostics.RegisterSecrets(append(cfg.APIKeys, cfg.Admin.PasswordHash)...)
 	st, err := openStore(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -164,15 +173,14 @@ func serve(args []string) int {
 	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           handler,
+		Handler:           diagnostics.Middleware(handler),
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
-	log.Printf("quickwork-openai listening on %s (config=%s db=%s accounts=%d auth=%v)",
-		cfg.Addr, cfg.Path, cfg.Database, count, len(cfg.APIKeys) > 0)
+	diagnostics.Event(context.Background(), "info", "server.started", "addr", cfg.Addr, "accounts", count, "auth_enabled", len(cfg.APIKeys) > 0, "logging_level", cfg.Logging.Level, "logging_file", cfg.Logging.File, "request_timeout", cfg.RequestTimeout.String())
 	if count == 0 {
-		log.Printf("no accounts stored; run `quickproxy login` to add one")
+		diagnostics.Event(context.Background(), "warn", "server.no_accounts")
 	}
 
 	stop, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -186,13 +194,13 @@ func serve(args []string) int {
 	}()
 
 	<-stop.Done()
-	log.Printf("shutting down")
+	diagnostics.Event(context.Background(), "info", "server.stopping")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)
 	select {
 	case err := <-listenErr:
-		log.Printf("listen: %v", err)
+		diagnostics.Event(context.Background(), "error", "server.listen_failed", "error", err)
 		return 1
 	default:
 		return 0

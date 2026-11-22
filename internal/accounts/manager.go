@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"quickwork-openai/internal/config"
+	"quickwork-openai/internal/diagnostics"
 	"quickwork-openai/internal/oauth"
 	"quickwork-openai/internal/store"
 )
@@ -53,6 +54,7 @@ func (m *Manager) Next(ctx context.Context) (*store.Account, error) {
 		return nil, err
 	}
 	if len(list) == 0 {
+		diagnostics.Event(ctx, "error", "account.unavailable", "reason", "no_enabled_accounts")
 		return nil, ErrNoAccounts
 	}
 	start := int(m.next.Add(1)-1) % len(list)
@@ -62,8 +64,11 @@ func (m *Manager) Next(ctx context.Context) (*store.Account, error) {
 			return nil, err
 		}
 		a := &list[(start+i)%len(list)]
+		diagnostics.RegisterSecrets(a.AccessToken, a.RefreshToken, a.IDToken)
+		diagnostics.Event(ctx, "debug", "account.candidate", "account_id", a.ID, "provider", a.Provider, "expires_at", a.ExpiresAt, "enabled_accounts", len(list))
 		usable, err := m.ensureFresh(ctx, a)
 		if err != nil {
+			diagnostics.Event(ctx, "warn", "account.skipped", "account_id", a.ID, "error", err)
 			_ = m.store.SetError(ctx, a.ID, err.Error())
 			errs = append(errs, fmt.Sprintf("account %d (%s): %v", a.ID, a.Email, err))
 			continue
@@ -71,6 +76,7 @@ func (m *Manager) Next(ctx context.Context) (*store.Account, error) {
 		if err := m.store.MarkUsed(ctx, usable.ID); err != nil {
 			return nil, err
 		}
+		diagnostics.Event(ctx, "info", "account.selected", "account_id", usable.ID, "provider", usable.Provider, "expires_at", usable.ExpiresAt)
 		return usable, nil
 	}
 	return nil, fmt.Errorf("no usable account: %s", strings.Join(errs, "; "))
@@ -103,13 +109,20 @@ func (m *Manager) ensureFresh(ctx context.Context, a *store.Account) (*store.Acc
 
 // refreshLocked refreshes and persists one account. The caller holds its lock.
 func (m *Manager) refreshLocked(ctx context.Context, a *store.Account) (*store.Account, error) {
+	diagnostics.RegisterSecrets(a.AccessToken, a.RefreshToken, a.IDToken)
+	started := time.Now()
+	diagnostics.Event(ctx, "info", "account.refresh.started", "account_id", a.ID, "provider", a.Provider)
 	refreshed, err := oauth.Refresh(ctx, a)
 	if err != nil {
+		diagnostics.Event(ctx, "error", "account.refresh.failed", "account_id", a.ID, "duration_ms", time.Since(started).Milliseconds(), "error", err)
 		return nil, err
 	}
 	if err := m.store.Update(ctx, refreshed); err != nil {
+		diagnostics.Event(ctx, "error", "account.refresh.save_failed", "account_id", a.ID, "error", err)
 		return nil, err
 	}
+	diagnostics.RegisterSecrets(refreshed.AccessToken, refreshed.RefreshToken, refreshed.IDToken)
+	diagnostics.Event(ctx, "info", "account.refresh.completed", "account_id", a.ID, "duration_ms", time.Since(started).Milliseconds(), "expires_at", refreshed.ExpiresAt)
 	return refreshed, nil
 }
 
@@ -170,6 +183,7 @@ func (m *Manager) ReportFailure(ctx context.Context, id int64, err error) {
 	if err == nil {
 		return
 	}
+	diagnostics.Event(ctx, "warn", "account.upstream_failed", "account_id", id, "error", err)
 	_ = m.store.SetError(ctx, id, err.Error())
 }
 
