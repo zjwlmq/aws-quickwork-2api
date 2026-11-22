@@ -251,6 +251,7 @@ func (l *Logger) clean(key string, v any, depth int) any {
 }
 
 func Event(ctx context.Context, level, event string, fields ...any) {
+	observeEvent(ctx, level, event, fields)
 	l := Default()
 	if l == nil || levelNumber(level) < l.level {
 		return

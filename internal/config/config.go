@@ -69,25 +69,26 @@ type Logging struct {
 
 // Config is the server configuration stored in config.json.
 type Config struct {
-	Addr             string   `json:"addr"`
-	Database         string   `json:"database"`
-	APIKeys          []string `json:"api_keys"`
-	Models           []string `json:"models"`
-	DefaultModel     string   `json:"default_model"`
-	RequestTimeout   Duration `json:"request_timeout"`
-	RefreshBefore    Duration `json:"refresh_before"`
-	MaxAttempts      int      `json:"max_attempts"`
-	AppVersion       string   `json:"app_version"`
-	Surface          string   `json:"surface"`
-	OutpostID        string   `json:"outpost_id"`
-	WorkingSessionID string   `json:"working_session_id"`
-	Timezone         string   `json:"timezone"`
-	Locale           string   `json:"locale"`
-	ThinkingEffort   string   `json:"thinking_effort"`
-	KeepSessions     bool     `json:"keep_sessions"`
-	OAuth            OAuth    `json:"oauth"`
-	Admin            Admin    `json:"admin"`
-	Logging          Logging  `json:"logging"`
+	Addr                string   `json:"addr"`
+	Database            string   `json:"database"`
+	APIKeys             []string `json:"api_keys"`
+	Models              []string `json:"models"`
+	DefaultModel        string   `json:"default_model"`
+	RequestTimeout      Duration `json:"request_timeout"`
+	RefreshBefore       Duration `json:"refresh_before"`
+	MaxAttempts         int      `json:"max_attempts"`
+	AppVersion          string   `json:"app_version"`
+	Surface             string   `json:"surface"`
+	OutpostID           string   `json:"outpost_id"`
+	WorkingSessionID    string   `json:"working_session_id"`
+	Timezone            string   `json:"timezone"`
+	Locale              string   `json:"locale"`
+	ThinkingEffort      string   `json:"thinking_effort"`
+	KeepSessions        bool     `json:"keep_sessions"`
+	OAuth               OAuth    `json:"oauth"`
+	Admin               Admin    `json:"admin"`
+	Logging             Logging  `json:"logging"`
+	RequestLogDirectory string   `json:"request_log_directory"`
 
 	// Path is the absolute config file path; not serialized.
 	Path string `json:"-"`
@@ -96,19 +97,20 @@ type Config struct {
 // Default returns the built-in configuration.
 func Default() Config {
 	return Config{
-		Addr:           "127.0.0.1:8080",
-		Database:       "data/quickwork.db",
-		APIKeys:        []string{},
-		Models:         []string{"smart", "fast", "balanced", "auto"},
-		DefaultModel:   "smart",
-		RequestTimeout: Duration(5 * time.Minute),
-		RefreshBefore:  Duration(10 * time.Minute),
-		MaxAttempts:    3,
-		AppVersion:     "1.2.4660",
-		Surface:        "QUICK_WORK_DESKTOP_WINDOWS",
-		Timezone:       "UTC",
-		Locale:         "en-US",
-		Logging:        Logging{Level: "info", File: "data/logs/quickwork.jsonl", MaxMB: 20, Backups: 5},
+		Addr:                "127.0.0.1:8080",
+		Database:            "data/quickwork.db",
+		APIKeys:             []string{},
+		Models:              []string{"smart", "fast", "balanced", "auto"},
+		DefaultModel:        "smart",
+		RequestTimeout:      Duration(5 * time.Minute),
+		RefreshBefore:       Duration(10 * time.Minute),
+		MaxAttempts:         3,
+		AppVersion:          "1.2.4660",
+		Surface:             "QUICK_WORK_DESKTOP_WINDOWS",
+		Timezone:            "UTC",
+		Locale:              "en-US",
+		Logging:             Logging{Level: "info", File: "data/logs/quickwork.jsonl", MaxMB: 20, Backups: 5},
+		RequestLogDirectory: "data/request-details",
 		OAuth: OAuth{
 			Provider:     "social",
 			BuildStage:   "prod",
@@ -154,6 +156,9 @@ func Load(configPath string) (*Config, error) {
 	if !filepath.IsAbs(cfg.Logging.File) {
 		cfg.Logging.File = filepath.Join(filepath.Dir(abs), cfg.Logging.File)
 	}
+	if !filepath.IsAbs(cfg.RequestLogDirectory) {
+		cfg.RequestLogDirectory = filepath.Join(filepath.Dir(abs), cfg.RequestLogDirectory)
+	}
 	return &cfg, nil
 }
 
@@ -171,6 +176,9 @@ func write(path string, cfg *Config) error {
 
 func applyDefaults(c *Config) {
 	d := Default()
+	if c.RequestLogDirectory == "" {
+		c.RequestLogDirectory = d.RequestLogDirectory
+	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = d.Logging.Level
 	}

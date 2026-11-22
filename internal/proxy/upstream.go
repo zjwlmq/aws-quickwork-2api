@@ -111,7 +111,7 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		if err != nil {
 			level = "error"
 		}
-		diagnostics.Event(ctx, level, "upstream.turn.finished", "duration_ms", time.Since(started).Milliseconds(), "text_bytes", len(result.Text), "native_tools", len(result.ToolCalls), "artifacts", len(result.Artifacts), "cached_files", len(result.Files), "usage", usageMap(result.Usage), "error", err, "context_error", ctx.Err())
+		diagnostics.Event(ctx, level, "upstream.turn.finished", "duration_ms", time.Since(started).Milliseconds(), "text_bytes", len(result.Text), "native_tools", len(result.ToolCalls), "artifacts", len(result.Artifacts), "cached_files", len(result.Files), "usage", usageMap(result.Usage), "upstream_usage", map[string]any{"input_tokens": result.Usage.PromptTokens, "output_tokens": result.Usage.CompletionTokens, "total_tokens": result.Usage.TotalTokens, "cache_read_tokens": result.Usage.CacheReadTokens, "cache_write_tokens": result.Usage.CacheWriteTokens}, "error", err, "context_error", ctx.Err())
 	}()
 
 	wsURL, headers, gateway, err := u.dialInfo(sess)

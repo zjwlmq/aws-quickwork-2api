@@ -11,6 +11,10 @@
     loading: false,
     videos: [],
     logs: [],
+    requests: [],
+    requestOffset: 0,
+    requestTotal: 0,
+    requestDetail: null,
   };
   const statusLabels = {
     ready: "可用",
@@ -23,6 +27,9 @@
   let videoLoadVersion = 0;
   let logPollTimer;
   let logLoadVersion = 0;
+  let requestLoadVersion = 0;
+  let requestDetailVersion = 0;
+  let requestSearchTimer;
   function errorAt(id, message) {
     $(id).textContent = message || "";
     $(id).hidden = !message;
@@ -87,6 +94,22 @@
     clearTimeout(logPollTimer);
     logLoadVersion++;
     state.logs = [];
+    requestLoadVersion++;
+    requestDetailVersion++;
+    state.requests = [];
+    state.requestDetail = null;
+    state.requestOffset = 0;
+    $("request-search").value = "";
+    $("request-rows").replaceChildren();
+    for (const key of [
+      "request-summary-json",
+      "request-input-json",
+      "request-output-json",
+      "request-detail-id",
+      "request-detail-note",
+    ])
+      $(key).textContent = "";
+    if ($("request-dialog").open) $("request-dialog").close();
     $("log-entries").replaceChildren();
     videoLoadVersion++;
     $("video-jobs").replaceChildren();
@@ -113,13 +136,15 @@
       session.username === "admin" ? "管理员" : session.username;
     errorAt("login-error", "");
     navigate(
-      location.hash === "#logs"
-        ? "logs"
-        : location.hash === "#videos"
-          ? "videos"
-          : location.hash === "#connection"
-            ? "connection"
-            : "accounts",
+      location.hash === "#requests"
+        ? "requests"
+        : location.hash === "#logs"
+          ? "logs"
+          : location.hash === "#videos"
+            ? "videos"
+            : location.hash === "#connection"
+              ? "connection"
+              : "accounts",
     );
   }
   function escape(value) {
@@ -230,13 +255,15 @@
   function navigate(page) {
     videoLoadVersion++;
     logLoadVersion++;
+    requestLoadVersion++;
     state.page = page;
     $("accounts-section").hidden = page !== "accounts";
     $("header-actions").hidden = page !== "accounts";
     $("key-details").hidden = page !== "connection";
     $("videos-section").hidden = page !== "videos";
     $("logs-section").hidden = page !== "logs";
-    $("connection-panel").hidden = page === "videos" || page === "logs";
+    $("requests-section").hidden = page !== "requests";
+    $("connection-panel").hidden = !["accounts", "connection"].includes(page);
     $("page-title").textContent =
       page === "accounts"
         ? "账号管理"
@@ -244,7 +271,9 @@
           ? "视频生成"
           : page === "logs"
             ? "诊断日志"
-            : "接入信息";
+            : page === "requests"
+              ? "请求日志"
+              : "接入信息";
     $("page-description").textContent =
       page === "accounts"
         ? "管理 Amazon Quick 授权，账号自动轮询使用。"
@@ -252,13 +281,22 @@
           ? "通过 Quick 聊天制作视频，查看任务进度与成片。"
           : page === "logs"
             ? "按请求查看完整处理过程，定位失败阶段与上游异常。"
-            : "在 OpenAI 兼容客户端中使用此服务。";
+            : page === "requests"
+              ? "查看最近 2,000 次调用；出错时可复制或下载详细请求与返回。"
+              : "在 OpenAI 兼容客户端中使用此服务。";
     history.replaceState(null, "", "#" + page);
     clearTimeout(videoPollTimer);
     clearTimeout(logPollTimer);
     if (page === "videos") loadVideos();
     if (page === "logs") loadLogs();
-    for (const name of ["accounts", "connection", "videos", "logs"]) {
+    if (page === "requests") loadRequests();
+    for (const name of [
+      "accounts",
+      "connection",
+      "videos",
+      "logs",
+      "requests",
+    ]) {
       $("nav-" + name).classList.toggle("selected", name === page);
       if (name === page) $("nav-" + name).setAttribute("aria-current", "page");
       else $("nav-" + name).removeAttribute("aria-current");
@@ -456,6 +494,232 @@
   $("refresh-videos").addEventListener("click", loadVideos);
   $("nav-videos").addEventListener("click", () => navigate("videos"));
   $("nav-logs").addEventListener("click", () => navigate("logs"));
+  $("nav-requests").addEventListener("click", () => navigate("requests"));
+  const requestStatusLabels = {
+    success: "成功",
+    error: "失败",
+    recovered: "出错后成功",
+    cancelled: "已取消",
+    interrupted: "已中断",
+    running: "处理中",
+    queued: "已提交",
+    in_progress: "生成中",
+  };
+  const tokenNumber = (value) =>
+    new Intl.NumberFormat("zh-CN").format(value || 0);
+  function renderRequests() {
+    const protocols = {
+      anthropic_messages: "messages",
+      openai_chat: "chat.completions",
+      video: "videos",
+    };
+    $("request-rows").innerHTML = state.requests
+      .map((row) => {
+        const time = new Intl.DateTimeFormat("zh-CN", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }).format(new Date(row.started_at));
+        const session = row.session_id || "未识别会话";
+        const account = row.account_id
+          ? `账号 ${row.account_id}`
+          : "尚未选择账号";
+        const model = row.model || "未解析模型";
+        const tokens = row.usage_known
+          ? `${tokenNumber(row.input_tokens)} / ${tokenNumber(row.output_tokens)}`
+          : "— / —";
+        const usageHint = row.usage_known
+          ? `缓存读 ${tokenNumber(row.cache_read_tokens)} · 写 ${tokenNumber(row.cache_write_tokens)}`
+          : "暂无上游用量";
+        const status = requestStatusLabels[row.status] || row.status;
+        return `<tr><td data-label="时间 / 密钥"><span>${escape(time)}</span><small>${escape(row.key_id || "管理员 / 未携带密钥")}</small><small>${escape(account)} · ${escape(session)}</small></td><td data-label="模型 / 协议"><span class="request-model">${escape(model)}</span><small class="request-protocol">${escape(protocols[row.protocol] || row.protocol)} · ${row.stream ? "stream" : "JSON"}</small><small>${row.upstream_model ? `路由 ${escape(row.upstream_model)}` : "尚未建立上游连接"}${row.retry_count ? ` · 重试 ${row.retry_count} 次` : ""}</small></td><td data-label="状态"><span class="request-status ${escape(row.status)}"><i aria-hidden="true"></i>${escape(status)}</span><small>HTTP ${row.http_status || "—"}</small></td><td data-label="输入 / 输出 Token"><span>${tokens}</span><small>${usageHint}</small></td><td data-label="耗时"><span>${(row.duration_ms / 1000).toFixed(2)} s</span></td><td data-label="操作"><button class="text-button request-details-button" type="button" data-request-id="${escape(row.id)}">详情</button></td></tr>`;
+      })
+      .join("");
+    $("requests-empty").hidden = state.requests.length > 0;
+    $("request-count").textContent =
+      `共 ${tokenNumber(state.requestTotal)} 条${state.requests.length ? ` · 当前 ${state.requestOffset + 1}–${state.requestOffset + state.requests.length}` : ""}`;
+    $("request-page").textContent = String(
+      Math.floor(state.requestOffset / 50) + 1,
+    );
+    $("requests-previous").disabled = state.requestOffset === 0;
+    $("requests-next").disabled =
+      state.requestOffset + 50 >= state.requestTotal;
+  }
+  async function loadRequests() {
+    const version = ++requestLoadVersion;
+    errorAt("request-error", "");
+    $("request-count").textContent = "正在读取调用记录…";
+    const query = new URLSearchParams({
+      limit: "50",
+      offset: String(state.requestOffset),
+      status: $("request-status").value,
+      search: $("request-search").value.trim(),
+    });
+    try {
+      const search = query.get("search");
+      const possibleKey = search.replace(/^Bearer\s+/i, "");
+      if (
+        possibleKey &&
+        (/^sk-[A-Za-z0-9_-]{8,}$/.test(possibleKey) ||
+          state.connection?.api_keys?.includes(possibleKey))
+      ) {
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(possibleKey),
+        );
+        query.set(
+          "search",
+          "key_" +
+            Array.from(new Uint8Array(digest), (byte) =>
+              byte.toString(16).padStart(2, "0"),
+            )
+              .join("")
+              .slice(0, 12),
+        );
+      }
+      const result = await api("/requests?" + query);
+      if (
+        version !== requestLoadVersion ||
+        !state.session ||
+        state.page !== "requests"
+      )
+        return;
+      state.requests = result.data;
+      state.requestTotal = result.total;
+      renderRequests();
+    } catch (error) {
+      if (version === requestLoadVersion && state.page === "requests")
+        errorAt("request-error", error.message);
+    }
+  }
+  function closeRequestDetail() {
+    requestDetailVersion++;
+    state.requestDetail = null;
+    $("request-dialog").close();
+  }
+  async function openRequestDetail(id) {
+    const version = ++requestDetailVersion;
+    state.requestDetail = null;
+    errorAt("request-detail-error", "");
+    $("request-detail-id").textContent = id;
+    $("request-detail-note").textContent = "正在读取详情…";
+    for (const key of [
+      "request-summary-json",
+      "request-input-json",
+      "request-output-json",
+    ])
+      $(key).textContent = "";
+    for (const key of [
+      "copy-request-json",
+      "copy-response-json",
+      "download-request-detail",
+      "request-diagnostics",
+    ])
+      $(key).disabled = true;
+    $("request-dialog").showModal();
+    try {
+      const detail = await api("/requests/" + encodeURIComponent(id));
+      if (version !== requestDetailVersion || !state.session) return;
+      state.requestDetail = detail;
+      $("request-summary-json").textContent = JSON.stringify(
+        {
+          record: detail.record,
+          attempts: detail.attempts || [],
+          events: detail.events || [],
+        },
+        null,
+        2,
+      );
+      $("request-input-json").textContent = JSON.stringify(
+        detail.request || { note: detail.body_note },
+        null,
+        2,
+      );
+      $("request-output-json").textContent = JSON.stringify(
+        detail.response || { note: detail.body_note },
+        null,
+        2,
+      );
+      $("request-detail-note").textContent =
+        (detail.storage === "disk"
+          ? "已保存的报错详情"
+          : detail.storage === "memory"
+            ? "本次正文暂存于内存，服务重启或内存清理后仅保留概要"
+            : "正文详情已清理，仅保留调用概要") +
+        "。" +
+        (detail.redaction_note || detail.body_note || "");
+      for (const key of [
+        "copy-request-json",
+        "copy-response-json",
+        "download-request-detail",
+        "request-diagnostics",
+      ])
+        $(key).disabled = false;
+      $("copy-request-json").disabled = !detail.request;
+      $("copy-response-json").disabled = !detail.response;
+    } catch (error) {
+      if (version === requestDetailVersion)
+        errorAt("request-detail-error", error.message);
+    }
+  }
+  $("request-rows").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-request-id]");
+    if (button) openRequestDetail(button.dataset.requestId);
+  });
+  $("close-request-detail").addEventListener("click", closeRequestDetail);
+  $("request-dialog").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeRequestDetail();
+  });
+  $("refresh-requests").addEventListener("click", loadRequests);
+  $("request-status").addEventListener("change", () => {
+    state.requestOffset = 0;
+    loadRequests();
+  });
+  $("request-search").addEventListener("input", () => {
+    clearTimeout(requestSearchTimer);
+    requestSearchTimer = setTimeout(() => {
+      state.requestOffset = 0;
+      loadRequests();
+    }, 300);
+  });
+  $("requests-previous").addEventListener("click", () => {
+    state.requestOffset = Math.max(0, state.requestOffset - 50);
+    loadRequests();
+  });
+  $("requests-next").addEventListener("click", () => {
+    state.requestOffset += 50;
+    loadRequests();
+  });
+  $("copy-request-json").addEventListener("click", () =>
+    copy($("request-input-json").textContent, $("copy-request-json")),
+  );
+  $("copy-response-json").addEventListener("click", () =>
+    copy($("request-output-json").textContent, $("copy-response-json")),
+  );
+  $("download-request-detail").addEventListener("click", async () => {
+    const detail = state.requestDetail;
+    if (!detail) return;
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(detail, null, 2)], { type: "application/json" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `quickwork-request-${detail.record.id}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  $("request-diagnostics").addEventListener("click", () => {
+    const id = state.requestDetail?.record.id;
+    if (!id) return;
+    closeRequestDetail();
+    $("log-request").value = id;
+    $("log-search").value = "";
+    $("log-level").value = "";
+    navigate("logs");
+  });
   function logQuery(limit) {
     return new URLSearchParams({
       request_id: $("log-request").value.trim(),

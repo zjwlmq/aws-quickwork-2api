@@ -77,7 +77,7 @@ func Middleware(next http.Handler) http.Handler {
 		if _, ok := w.(http.Flusher); ok {
 			writer = &flushWriter{capture}
 		}
-		quiet := r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/admin/api/logs") || (strings.HasPrefix(r.URL.Path, "/admin/") && !strings.HasPrefix(r.URL.Path, "/admin/api/"))
+		quiet := r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/admin/api/logs") || strings.HasPrefix(r.URL.Path, "/admin/api/requests") || (strings.HasPrefix(r.URL.Path, "/admin/") && !strings.HasPrefix(r.URL.Path, "/admin/api/"))
 		if !quiet {
 			peer, _, _ := net.SplitHostPort(r.RemoteAddr)
 			Event(ctx, "info", "http.request.started", "method", r.Method, "path", r.URL.Path, "content_length", r.ContentLength, "content_type", r.Header.Get("Content-Type"), "peer_ip", peer, "user_agent", r.UserAgent(), "anthropic_version", r.Header.Get("Anthropic-Version"))

@@ -132,6 +132,10 @@
             <svg class="icon" aria-hidden="true"><use href="#i-logs" /></svg>
             <span>诊断日志</span>
           </button>
+          <button class="nav-item" id="nav-requests" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-logs" /></svg>
+            <span>请求日志</span>
+          </button>
         </nav>
         <div class="sidebar-bottom">
           <div class="admin-label">
@@ -344,6 +348,76 @@
             </section>
           </div>
         </section>
+        <section id="requests-section" aria-label="请求日志" hidden>
+          <div class="requests-panel">
+            <div class="requests-heading">
+              <h2>调用记录</h2>
+              <div class="requests-tools">
+                <input
+                  id="request-search"
+                  type="search"
+                  maxlength="256"
+                  aria-label="搜索请求"
+                  placeholder="搜索请求 ID、模型、密钥指纹或会话"
+                />
+                <select id="request-status" aria-label="筛选调用状态">
+                  <option value="">全部状态</option>
+                  <option value="success">成功</option>
+                  <option value="errors">失败 / 中断</option>
+                  <option value="recovered">出错后成功</option>
+                  <option value="active">处理中</option>
+                </select>
+                <button id="refresh-requests" class="button" type="button">
+                  刷新
+                </button>
+              </div>
+            </div>
+            <p id="request-retention" class="requests-retention">
+              保留最近 2,000
+              次调用概要。仅报错详情写入磁盘，包含出错后重试成功的请求；最多 7
+              天、100 条、128 MiB，超限自动清理。成功正文仅在内存中短暂保留。
+            </p>
+            <div
+              id="request-error"
+              class="form-error"
+              role="alert"
+              hidden
+            ></div>
+            <div class="requests-table-wrap">
+              <table class="requests-table">
+                <thead>
+                  <tr>
+                    <th>时间 / 密钥</th>
+                    <th>模型 / 协议</th>
+                    <th>状态</th>
+                    <th>输入 / 输出 Token</th>
+                    <th>耗时</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="request-rows"></tbody>
+              </table>
+              <div id="requests-empty" class="requests-empty" hidden>
+                暂无匹配的调用记录。发起一次对话请求后，可在这里查看。
+              </div>
+            </div>
+            <div class="requests-footer">
+              <span id="request-count" role="status">正在读取调用记录…</span>
+              <div>
+                <button
+                  id="requests-previous"
+                  type="button"
+                  class="button small"
+                >
+                  上一页</button
+                ><span id="request-page">1</span
+                ><button id="requests-next" type="button" class="button small">
+                  下一页
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
         <section id="logs-section" aria-label="诊断日志" hidden>
           <div class="logs-panel">
             <div class="logs-heading">
@@ -488,6 +562,65 @@
         </section>
       </main>
     </div>
+
+    <dialog
+      id="request-dialog"
+      class="modal request-dialog"
+      aria-labelledby="request-detail-title"
+    >
+      <div class="modal-header">
+        <div>
+          <h2 id="request-detail-title">请求详情</h2>
+          <p id="request-detail-id" class="form-hint"></p>
+        </div>
+        <button
+          id="close-request-detail"
+          type="button"
+          class="icon-button"
+          aria-label="关闭请求详情"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <div
+        id="request-detail-error"
+        class="form-error"
+        role="alert"
+        hidden
+      ></div>
+      <p id="request-detail-note" class="request-detail-note" role="status">
+        正在读取详情…
+      </p>
+      <div class="request-detail-actions">
+        <button id="copy-request-json" class="button small" type="button">
+          复制请求</button
+        ><button id="copy-response-json" class="button small" type="button">
+          复制返回</button
+        ><button
+          id="download-request-detail"
+          class="button small primary"
+          type="button"
+        >
+          下载完整详情</button
+        ><button id="request-diagnostics" class="button small" type="button">
+          查看诊断事件
+        </button>
+      </div>
+      <div class="request-detail-grid">
+        <section>
+          <h3>调用概要与重试</h3>
+          <pre id="request-summary-json"></pre>
+        </section>
+        <section>
+          <h3>请求</h3>
+          <pre id="request-input-json"></pre>
+        </section>
+        <section>
+          <h3>返回</h3>
+          <pre id="request-output-json"></pre>
+        </section>
+      </div>
+    </dialog>
 
     <dialog id="add-dialog" class="modal" aria-labelledby="add-title">
       <div class="modal-header">

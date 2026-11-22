@@ -19,6 +19,7 @@ import (
 	"quickwork-openai/internal/config"
 	"quickwork-openai/internal/diagnostics"
 	"quickwork-openai/internal/oauth"
+	"quickwork-openai/internal/requestlog"
 	"quickwork-openai/internal/store"
 )
 
@@ -41,6 +42,7 @@ type Server struct {
 	flows      map[string]pendingLogin
 	loginSlots chan struct{}
 	media      MediaConsole
+	requests   *requestlog.Recorder
 }
 
 type MediaConsole interface {
@@ -77,6 +79,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /admin/api/accounts/{id}", s.requireSession(s.deleteAccount))
 	mux.HandleFunc("GET /admin/api/connection", s.requireSession(s.connection))
 	mux.HandleFunc("GET /admin/api/logs", s.requireSession(s.logs))
+	mux.HandleFunc("GET /admin/api/requests", s.requireSession(s.listRequests))
+	mux.HandleFunc("GET /admin/api/requests/{id}", s.requireSession(s.requestDetail))
+	mux.HandleFunc("GET /admin/api/requests/{id}/download", s.requireSession(s.requestDetail))
 	mux.HandleFunc("POST /admin/api/login-flows", s.requireSession(s.createFlow))
 	mux.HandleFunc("POST /admin/api/login-flows/{id}/callback", s.requireSession(s.submitCallback))
 	mux.HandleFunc("DELETE /admin/api/login-flows/{id}", s.requireSession(s.cancelFlow))

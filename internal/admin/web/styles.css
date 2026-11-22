@@ -1341,6 +1341,308 @@ tbody tr:hover {
   padding: 24px;
   min-width: 0;
 }
+.requests-panel {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.requests-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 25px 26px 0;
+}
+.requests-heading h2 {
+  font-size: 23px;
+  margin: 0;
+  white-space: nowrap;
+}
+.requests-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.requests-tools input {
+  width: 265px;
+  font-size: 12px;
+  min-height: 42px;
+}
+.requests-tools select {
+  width: 148px;
+  min-height: 42px;
+  font-size: 13px;
+}
+.requests-retention {
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--muted);
+  margin: 23px 26px 19px;
+}
+.requests-panel > .form-error {
+  margin: 15px 26px;
+}
+.requests-table-wrap {
+  overflow-x: auto;
+}
+.requests-table {
+  width: 100%;
+  min-width: 850px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+  color: #315479;
+}
+.requests-table th {
+  background: #f8fafc;
+  text-align: left;
+  font-weight: 400;
+  padding: 18px 24px;
+  color: #667d99;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.requests-table th:nth-child(1) {
+  width: 24%;
+}
+.requests-table th:nth-child(2) {
+  width: 25%;
+}
+.requests-table th:nth-child(3) {
+  width: 13%;
+}
+.requests-table th:nth-child(4) {
+  width: 20%;
+}
+.requests-table th:nth-child(5) {
+  width: 10%;
+}
+.requests-table th:nth-child(6) {
+  width: 8%;
+}
+.requests-table td {
+  padding: 22px 24px;
+  vertical-align: middle;
+  border-bottom: 1px solid #edf1f5;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.requests-table td small {
+  display: block;
+  font-size: 10px;
+  line-height: 1.8;
+  margin-top: 4px;
+  color: #8b9aaf;
+}
+.request-model,
+.request-protocol {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.request-model {
+  font-size: 12px;
+}
+.request-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #007587;
+}
+.request-status i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.request-status.error,
+.request-status.cancelled,
+.request-status.interrupted {
+  color: #bd4752;
+}
+.request-status.recovered {
+  color: #a17121;
+}
+.request-status.running,
+.request-status.queued,
+.request-status.in_progress {
+  color: var(--accent);
+}
+.request-details-button {
+  font-size: 15px;
+  color: #315479;
+  white-space: nowrap;
+}
+.requests-empty {
+  padding: 58px 20px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--muted);
+}
+.requests-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 17px 26px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.requests-footer > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.request-dialog {
+  width: 1060px;
+  max-width: calc(100vw - 40px);
+  max-height: 90vh;
+  padding: 26px;
+  overflow: auto;
+}
+.request-detail-note {
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.request-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 20px 0;
+}
+.request-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.request-detail-grid section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+.request-detail-grid section:first-child {
+  grid-column: 1/-1;
+}
+.request-detail-grid h3 {
+  font-size: 14px;
+  padding: 12px 15px;
+  margin: 0;
+  background: #f6f8fb;
+  border-bottom: 1px solid var(--border);
+}
+.request-detail-grid pre {
+  font:
+    11px/1.8 ui-monospace,
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 390px;
+  overflow: auto;
+  padding: 15px;
+  margin: 0;
+}
+.request-detail-grid section:first-child pre {
+  max-height: 220px;
+}
+@media (max-width: 1200px) {
+  .requests-heading {
+    align-items: start;
+    flex-direction: column;
+  }
+  .requests-tools {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .requests-tools input {
+    flex: 1;
+    min-width: 160px;
+  }
+  .requests-table th,
+  .requests-table td {
+    padding-left: 15px;
+    padding-right: 15px;
+  }
+}
+@media (max-width: 640px) {
+  .requests-heading {
+    padding: 20px 16px 0;
+    gap: 15px;
+  }
+  .requests-heading h2 {
+    font-size: 21px;
+  }
+  .requests-tools {
+    gap: 8px;
+  }
+  .requests-tools input {
+    width: 100%;
+    flex-basis: 100%;
+  }
+  .requests-tools select {
+    flex: 1;
+  }
+  .requests-retention {
+    margin: 18px 16px;
+    font-size: 11px;
+  }
+  .requests-table {
+    min-width: 0;
+    table-layout: auto;
+  }
+  .requests-table thead {
+    display: none;
+  }
+  .requests-table tbody {
+    display: block;
+  }
+  .requests-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    padding: 16px;
+    border-top: 1px solid var(--border);
+    gap: 15px 16px;
+  }
+  .requests-table td {
+    padding: 0;
+    border: 0;
+    display: block;
+    min-width: 0;
+    font-size: 12px;
+  }
+  .requests-table td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 10px;
+    color: #8b9aaf;
+    margin-bottom: 5px;
+  }
+  .requests-table td small {
+    font-size: 10px;
+  }
+  .requests-footer {
+    padding: 16px;
+    align-items: start;
+    flex-wrap: wrap;
+  }
+  .requests-footer > div {
+    gap: 10px;
+  }
+  .request-dialog {
+    padding: 20px 15px;
+    max-width: calc(100vw - 24px);
+  }
+  .request-detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .request-detail-actions .button {
+    font-size: 11px;
+  }
+}
 .logs-heading,
 .logs-meta {
   display: flex;
@@ -1640,5 +1942,17 @@ tbody tr:hover {
 @media (max-width: 360px) {
   .sidebar nav .nav-item .icon {
     display: none;
+  }
+}
+@media (max-width: 640px) {
+  .sidebar nav {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .sidebar nav .nav-item {
+    width: 100%;
+    padding: 10px 5px;
+    gap: 5px;
   }
 }

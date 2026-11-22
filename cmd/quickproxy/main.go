@@ -24,6 +24,7 @@ import (
 	"quickwork-openai/internal/diagnostics"
 	"quickwork-openai/internal/oauth"
 	"quickwork-openai/internal/proxy"
+	"quickwork-openai/internal/requestlog"
 	"quickwork-openai/internal/store"
 )
 
@@ -151,6 +152,12 @@ func serve(args []string) int {
 		return 1
 	}
 	defer st.Close()
+	requestLogs, err := requestlog.New(st, requestlog.DefaultOptions(cfg.RequestLogDirectory))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "request logs:", err)
+		return 1
+	}
+	defer requestLogs.Close()
 
 	mgr := accounts.New(st, cfg)
 	count, _ := mgr.EnabledCount(context.Background())
@@ -166,6 +173,7 @@ func serve(args []string) int {
 			fmt.Fprintln(os.Stderr, "admin:", err)
 			return 1
 		}
+		console.SetRequestLogs(requestLogs)
 		mux := http.NewServeMux()
 		mux.Handle("/admin/", console.Handler())
 		mux.Handle("/", handler)
@@ -173,7 +181,7 @@ func serve(args []string) int {
 	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           diagnostics.Middleware(handler),
+		Handler:           diagnostics.Middleware(requestLogs.Middleware(handler)),
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
