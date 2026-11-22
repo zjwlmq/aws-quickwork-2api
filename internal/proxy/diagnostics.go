@@ -66,7 +66,7 @@ func nativeEventMetadata(payload json.RawMessage) map[string]any {
 	}
 	sort.Strings(keys)
 	out := map[string]any{"payload_bytes": len(payload), "payload_keys": keys}
-	for _, key := range []string{"tool_name", "tool_id", "tool_call_id", "toolCallId", "error_code", "status", "continuation_expected", "is_error", "input_tokens", "output_tokens", "total_tokens", "cache_read_tokens", "cache_write_tokens"} {
+	for _, key := range []string{"tool_name", "tool_id", "tool_call_id", "toolCallId", "error_code", "status", "continuation_expected", "is_error", "input_tokens", "output_tokens", "total_tokens", "cache_read_tokens", "cache_write_tokens", "context_window", "model", "resolved_model_id", "served_model_id"} {
 		if raw, ok := obj[key]; ok {
 			var value any
 			if json.Unmarshal(raw, &value) == nil {

@@ -5,23 +5,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"quickwork-openai/internal/store"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"quickwork-openai/internal/accounts"
 	"quickwork-openai/internal/config"
 	"quickwork-openai/internal/diagnostics"
+	"quickwork-openai/internal/store"
 )
 
 type Server struct {
-	cfg         *config.Config
-	accounts    *accounts.Manager
-	tokens      *APIKeyAuth
-	upstream    *Upstream
-	store       *store.Store
-	mediaSecret []byte
-	videoSlots  chan struct{}
+	cfg                *config.Config
+	accounts           *accounts.Manager
+	tokens             *APIKeyAuth
+	upstream           *Upstream
+	store              *store.Store
+	mediaSecret        []byte
+	videoSlots         chan struct{}
+	chatCleanupRunning atomic.Bool
 }
 
 func NewServer(cfg *config.Config, mgr *accounts.Manager, stores ...*store.Store) *Server {
@@ -41,6 +43,9 @@ func NewServer(cfg *config.Config, mgr *accounts.Manager, stores ...*store.Store
 func (s *Server) InitMedia(ctx context.Context) error {
 	if s.store == nil {
 		return nil
+	}
+	if err := s.store.RecoverChatSessions(ctx); err != nil {
+		return err
 	}
 	if err := s.store.InitMedia(ctx); err != nil {
 		return err
@@ -131,17 +136,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout.Duration())
 	defer cancel()
-	prepared, attachments, err := prepareMedia(ctx, req.Messages)
-	if err != nil {
-		diagnostics.Event(ctx, "warn", "chat.media.prepare_failed", "error", err)
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_media", err.Error())
-		return
-	}
-	prompt, err := formatPrompt(prepared)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
-	}
 	systemPromptText := systemPrompt(req.Messages)
 	model := s.mapModel(req.Model)
 	allowedTools := requestedToolNames(&req)
@@ -161,6 +155,28 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	threadID := strings.TrimSpace(r.Header.Get("X-Thread-Id"))
+	turn, err := s.beginChatTurn(ctx, &req, threadID, ownerKey(tokenFromRequest(r)), model, systemPromptText, bridgePrompt)
+	if err != nil {
+		chatPrepareError(w, err)
+		return
+	}
+	w = observeChatWriter(w, &turn.observation, req.Stream)
+	defer turn.finishObserved(ctx)
+	if turn.row != nil {
+		threadID = turn.row.ID
+		w.Header().Set("X-Thread-Id", threadID)
+	}
+	prepared, attachments, err := prepareMedia(ctx, turn.delta())
+	if err != nil {
+		diagnostics.Event(ctx, "warn", "chat.media.prepare_failed", "error", err)
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_media", err.Error())
+		return
+	}
+	prompt, err := formatPrompt(prepared)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 	id := "chatcmpl-" + strings.ReplaceAll(uuid(), "-", "")
 	created := time.Now().Unix()
 	in := ChatInput{
@@ -187,13 +203,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		for attempt := range s.maxAttempts(ctx) {
 			attemptCtx := diagnostics.With(ctx, "attempt", attempt+1)
 			diagnostics.Event(attemptCtx, "info", "chat.attempt.started")
-			acct, err := s.accounts.Next(attemptCtx)
+			acct, err := turn.account(attemptCtx)
 			if err != nil {
 				diagnostics.Event(attemptCtx, "error", "chat.attempt.account_failed", "error", err)
 				lastErr = err
 				break
 			}
 			sess := SessionFromAccount(acct, s.cfg)
+			turn.bind(&in, w)
 			owner := ownerKey(tokenFromRequest(r))
 			in.ArtifactHandler = func(ctx context.Context, thread string, refs []NativeArtifact) ([]store.MediaFile, error) {
 				return s.cacheArtifacts(ctx, sess, owner, thread, refs)
@@ -209,7 +226,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			lastErr = err
-			if requestRefused(err) {
+			if requestRefused(err) || turn.dispatched {
 				break
 			}
 			s.accounts.ReportFailure(attemptCtx, acct.ID, err)
@@ -400,13 +417,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	for attempt := range s.maxAttempts(ctx) {
 		attemptCtx := diagnostics.With(ctx, "attempt", attempt+1)
 		diagnostics.Event(attemptCtx, "info", "chat.attempt.started")
-		acct, err := s.accounts.Next(attemptCtx)
+		acct, err := turn.account(attemptCtx)
 		if err != nil {
 			diagnostics.Event(attemptCtx, "error", "chat.attempt.account_failed", "error", err)
 			lastErr = err
 			break
 		}
 		sess := SessionFromAccount(acct, s.cfg)
+		turn.bind(&in, w)
 		owner := ownerKey(tokenFromRequest(r))
 		in.ArtifactHandler = func(ctx context.Context, thread string, refs []NativeArtifact) ([]store.MediaFile, error) {
 			return s.cacheArtifacts(ctx, sess, owner, thread, refs)
@@ -443,7 +461,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		lastErr = err
-		if requestRefused(err) {
+		if requestRefused(err) || turn.dispatched {
 			break
 		}
 		s.accounts.ReportFailure(attemptCtx, acct.ID, err)

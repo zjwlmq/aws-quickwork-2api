@@ -31,7 +31,9 @@ type Attachment struct {
 	Name          string `json:"name"`
 	Size          int64  `json:"size"`
 	MIMEType      string `json:"mimeType"`
-	Data          string `json:"data"`
+	Data          string `json:"data,omitempty"`
+	Path          string `json:"path,omitempty"`
+	AttachmentID  string `json:"attachmentId,omitempty"`
 	ContentSHA256 string `json:"contentSha256"`
 }
 

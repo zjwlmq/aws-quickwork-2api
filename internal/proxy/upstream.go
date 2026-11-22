@@ -41,8 +41,11 @@ type ChatInput struct {
 	SystemPrompt    string
 	ToolPrompt      string
 	Attachments     []Attachment
+	Uploads         []nativePendingUpload
 	contextPrepared bool
 	KeepSession     bool
+	ResumeSession   bool
+	OnDispatch      func()
 	ArtifactHandler ArtifactHandler
 }
 
@@ -144,25 +147,25 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 	diagnostics.Event(ctx, "info", "upstream.connection.established", "duration_ms", time.Since(dialStarted).Milliseconds(), "http_status", resp.StatusCode, "upstream_request_id", resp.Header.Get("X-Amzn-Requestid"))
 
 	writeMu := &sync.Mutex{}
-	encode := func(v any) ([]byte, error) {
+	encode := func(v any) ([]byte, int, error) {
 		body, err := json.Marshal(v)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if gateway {
 			frame := gatewayEncode(string(body))
 			if frame == nil {
-				return nil, fmt.Errorf("encode gateway frame")
+				return nil, 0, fmt.Errorf("encode gateway frame")
 			}
-			return frame, nil
+			return frame, len(body), nil
 		}
 		// AIDP (enterprise and social) uses the block-style binary envelope:
 		// {"eventType":"rawInputEvent","payload":{"payload":base64(json)}}.
-		return aidpEncode(string(body)), nil
+		return aidpEncode(string(body)), len(body), nil
 	}
 	messageType := websocket.BinaryMessage
 	send := func(v any) error {
-		frame, err := encode(v)
+		frame, nativeBytes, err := encode(v)
 		if err != nil {
 			return err
 		}
@@ -170,18 +173,21 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		if obj, ok := v.(map[string]any); ok {
 			kind, _ = obj["type"].(string)
 		}
-		if kind == "user_message" && len(frame) > 64<<10 {
-			diagnostics.Event(ctx, "warn", "upstream.message.too_large", "frame_bytes", len(frame), "frame_budget_bytes", 64<<10)
+		if kind == "user_message" && nativeBytes > 64<<10 {
+			diagnostics.Event(ctx, "warn", "upstream.message.too_large", "frame_bytes", len(frame), "native_json_bytes", nativeBytes, "native_json_budget_bytes", 64<<10)
 			return &upstreamRequestError{code: "context_length_exceeded", message: "完整请求封装超过 Quick 的 64 KiB 传输上限；内容未截断，请缩短会话或减少附件后重试"}
 		}
 		writeMu.Lock()
 		defer writeMu.Unlock()
+		if kind == "user_message" && in.OnDispatch != nil {
+			in.OnDispatch()
+		}
 		err = conn.WriteMessage(messageType, frame)
 		level := "debug"
 		if err != nil {
 			level = "error"
 		}
-		diagnostics.Event(ctx, level, "upstream.message.sent", "event_type", kind, "frame_bytes", len(frame), "error", err)
+		diagnostics.Event(ctx, level, "upstream.message.sent", "event_type", kind, "frame_bytes", len(frame), "native_json_bytes", nativeBytes, "error", err)
 		return err
 	}
 
@@ -208,8 +214,11 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		}
 	}()
 	go func() {
-		<-ctx.Done()
-		_ = conn.Close()
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopPing:
+		}
 	}()
 
 	// Handshake. The AIDP and Gateway paths use different session_connect shapes.
@@ -229,16 +238,48 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		})
 	}
 	_ = send(map[string]any{"type": "federate_status", "payload": map[string]any{}})
-	_ = send(map[string]any{
-		"type":    "session_create",
-		"payload": map[string]any{"session_id": threadID, "title": title},
-	})
+	if !in.ResumeSession && len(in.Uploads) == 0 {
+		_ = send(map[string]any{
+			"type":    "session_create",
+			"payload": map[string]any{"session_id": threadID, "title": title},
+		})
+	}
 	if !u.cfg.KeepSessions && !in.KeepSession {
 		defer func() {
 			_ = send(map[string]any{"type": "session_delete", "payload": map[string]any{"session_id": threadID}})
 		}()
 	}
 
+	if len(in.Uploads) > 0 {
+		uploadsReady := false
+		defer func() {
+			if err == nil || uploadsReady || in.ResumeSession {
+				return
+			}
+			// Upload/setup failures are safe to retry on a fresh account/thread.
+			// Remove this unused thread before its routing row can be rebound.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cleanupErr := u.DeleteSession(cleanupCtx, sess, threadID)
+			diagnostics.Event(ctx, "info", "upstream.attachment.unused_session_cleanup", "error", cleanupErr)
+		}()
+		if !in.ResumeSession {
+			// HTTP acknowledges session creation before files are delivered. A
+			// fire-and-forget WS create can race the concurrent upload request.
+			if createErr := u.createSession(ctx, sess, threadID, title); createErr != nil {
+				return ChatResult{}, createErr
+			}
+		}
+		in.Attachments = append([]Attachment(nil), in.Attachments...)
+		for _, upload := range in.Uploads {
+			attachment, uploadErr := u.uploadAttachment(ctx, sess, threadID, in.Attachments[upload.Index], upload.Bytes)
+			if uploadErr != nil {
+				return ChatResult{}, fmt.Errorf("upload native attachment: %w", uploadErr)
+			}
+			in.Attachments[upload.Index] = attachment
+		}
+		uploadsReady = true
+	}
 	payload := map[string]any{
 		"text":               in.Prompt,
 		"send_origin":        "programmatic",
@@ -877,7 +918,7 @@ func errorText(raw json.RawMessage, fallback, code string) string {
 			return strings.TrimSpace(x)
 		case map[string]any:
 			// Only inspect error fields; never serialize arbitrary echoed input.
-			for _, key := range []string{"message", "detail", "error", "description", "reason", "errors", "msg", "error_code", "code"} {
+			for _, key := range []string{"message", "errorMessage", "detail", "error", "description", "reason", "errors", "msg", "error_code", "code"} {
 				if message := find(x[key], depth+1); message != "" {
 					return message
 				}

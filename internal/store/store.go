@@ -107,6 +107,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := s.InitChatSessions(context.Background()); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// The database holds refresh tokens and client secrets.
 	_ = os.Chmod(path, 0o600)
 	return s, nil

@@ -14,6 +14,7 @@ type Session struct {
 	AccountID        int64
 	JWT              string
 	WSHost           string
+	TenantURL        string
 	WSPath           string
 	Provider         string
 	ActorARN         string
@@ -39,6 +40,7 @@ func SessionFromAccount(a *store.Account, cfg *config.Config) *Session {
 		AccountID:        a.ID,
 		JWT:              a.JWT(),
 		WSHost:           a.WSHost,
+		TenantURL:        a.TenantURL,
 		WSPath:           a.WSPath,
 		Provider:         a.Provider,
 		ActorARN:         a.ActorARN,

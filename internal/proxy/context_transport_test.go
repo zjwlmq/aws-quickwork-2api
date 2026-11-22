@@ -1,37 +1,17 @@
 package proxy
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"quickwork-openai/internal/config"
 )
 
 func readContextArchive(t *testing.T, in ChatInput) nativeContextArchive {
 	t.Helper()
-	attachment := in.Attachments[len(in.Attachments)-1]
-	compressed, err := base64.StdEncoding.DecodeString(attachment.Data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zr, err := gzip.NewReader(bytes.NewReader(compressed))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer zr.Close()
-	body, err := io.ReadAll(zr)
-	if err != nil {
-		t.Fatal(err)
-	}
+	body := in.Uploads[len(in.Uploads)-1].Bytes
 	var archive nativeContextArchive
 	if err := json.Unmarshal(body, &archive); err != nil {
 		t.Fatal(err)
@@ -49,8 +29,8 @@ func TestLongContextPreservesInstructionsHistoryAndToolSchemas(t *testing.T) {
 	if !strings.HasPrefix(packed.SystemPrompt, input.SystemPrompt) {
 		t.Fatal("application instructions lost their native custom_prompt position")
 	}
-	if len(packed.Attachments) != 2 || packed.Attachments[0] != input.Attachments[0] {
-		t.Fatal("existing attachments changed")
+	if len(packed.Attachments) != 2 || len(packed.Uploads) != 2 || string(packed.Uploads[0].Bytes) != "x" || packed.Attachments[0].Name != "original.txt" {
+		t.Fatal("existing attachment bytes or metadata changed")
 	}
 	archive := readContextArchive(t, packed)
 	if archive.Conversation != input.Prompt || archive.ClientToolProtocol != protocol {
@@ -61,7 +41,7 @@ func TestLongContextPreservesInstructionsHistoryAndToolSchemas(t *testing.T) {
 	}
 	second, err := prepareNativeContext(context.Background(), packed)
 	if err != nil || len(second.Attachments) != len(packed.Attachments) || second.SystemPrompt != packed.SystemPrompt {
-		t.Fatal("prepared context was compressed twice")
+		t.Fatal("prepared context was packed twice")
 	}
 }
 
@@ -77,21 +57,26 @@ func TestLongApplicationInstructionsArePreservedInArchive(t *testing.T) {
 	}
 }
 
-func TestOversizedIncompressibleContextReturns400BeforeAccountSelection(t *testing.T) {
+func TestOversizedIncompressibleContextUsesCompleteUncompressedUpload(t *testing.T) {
 	noise := make([]byte, 100<<10)
 	if _, err := rand.Read(noise); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Default()
-	server := NewServer(&cfg, nil)
-	body, _ := json.Marshal(map[string]any{"model": "smart", "stream": true, "messages": []any{map[string]any{"role": "user", "content": base64.StdEncoding.EncodeToString(noise)}}})
-	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	response := httptest.NewRecorder()
-	// A nil account manager deliberately catches any attempt to select or penalize
-	// an account for client input that cannot fit the native transport.
-	server.handleChat(response, request)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "context_length_exceeded") || strings.Contains(response.Header().Get("Content-Type"), "event-stream") {
-		t.Fatalf("expected an input error before streaming: %d %s", response.Code, response.Body.String())
+	input := ChatInput{Prompt: base64.StdEncoding.EncodeToString(noise)}
+	packed, err := prepareNativeContext(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readContextArchive(t, packed).Conversation != input.Prompt || len(packed.Uploads[0].Bytes) < len(input.Prompt) || packed.Attachments[0].MIMEType != "application/json" || packed.Attachments[0].Data != "" {
+		t.Fatal("input was compressed, changed or left in WS payload")
+	}
+}
+
+func TestNativeLimitExcludesBase64Envelope(t *testing.T) {
+	input := ChatInput{Prompt: strings.Repeat("x", 61<<10)}
+	packed, err := prepareNativeContext(context.Background(), input)
+	if err != nil || len(packed.Uploads) != 0 || packed.Prompt != input.Prompt {
+		t.Fatalf("native input fitting 64 KiB was unnecessarily offloaded: %v", err)
 	}
 }
 
