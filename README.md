@@ -259,7 +259,7 @@ sequenceDiagram
 
 ### 提示词与工具调用
 
-- `system` / `developer` 消息按原顺序保留角色标记，写入 `user_message.payload.custom_prompt`，与对话正文分开。
+- 常规请求的 `system` / `developer` 消息按原顺序保留角色标记，写入 `user_message.payload.custom_prompt`，与对话正文分开。
 - Quick 的官方客户端使用 `custom_prompt` 承载应用上下文；旧实现使用的 `system_prompt` 在此次 social 路径实测中被上游忽略，现已移除。没有调用方指令、也没有客户端工具时，不额外注入上下文。
 - 客户端工具定义和 RPC 编码协议也放入 `custom_prompt`，将工具参数编码为客户端能识别的事件，不再依赖追加到用户正文中的协议。
 - 该应用上下文入口不会更改 Quick 的服务权限或开放未提供的工具。已验证指令数据传递、普通用户请求与项目指令的优先关系、system 更新和真实客户端工具闭环；不代表所有模型行为都能获得与 Anthropic 服务完全相同的保证。
@@ -270,6 +270,10 @@ sequenceDiagram
 - 有客户端工具时，流式响应会缓冲到本轮结束，再一次性发送 `tool_calls` 或文本；非流式不受影响。
 - `tool_choice: "none"` 会关闭桥接；`tool_choice` 为具体函数时只接受该函数。上游原生工具事件在名称匹配时仍可转成 `tool_calls`。
 - 非流式响应中，工具调用放在 `choices[0].message.tool_calls`；桥接调用或只有工具且没有最终文本时 `finish_reason` 为 `tool_calls`，否则为 `stop`。
+- Quick 的单条聊天传输有 64 KiB 上限，包含 Base64 封装；Cursor 等客户端的工具定义、系统规范和历史合并后容易超限。代理按编码后的字节数检查，超限时将完整对话和客户端工具协议放进 gzip JSON 附件，由 Quick 原生 Python/文件工具读取后继续对话，不截断历史、工具说明、参数或工具返回。
+- 项目规范尽量保留在 `custom_prompt`；仍无法容纳时，完整规范进入附件的 `system_instructions` 字段，`custom_prompt` 明确要求按应用规范读取。该分支需要上游成功读取附件，可能增加原生工具步骤、耗时与用量；不保证与模型直接接收全部 system token 的行为完全相同。附件不使用公开下载地址，也不额外写入代理磁盘。
+- 压缩后仍超限（含无法压缩的大附件）会在选择账号及开始 OpenAI 流之前返回 `400 / context_length_exceeded`，提示缩短会话或减少附件；不会静默丢弃内容。
+- 上游顶层、嵌套对象和数组中的错误原因会保留并脱敏。Quick 明确的内容过滤中止返回 `content_filter`；这类请求拒绝和原生尺寸拒绝不会重试其他账号或标记账号异常。已开始的 SSE 使用错误事件，尚未开始的 OpenAI 请求使用 HTTP 400。此适配不会绕过 Quick 的内容过滤。
 
 ## 安全与隐私
 

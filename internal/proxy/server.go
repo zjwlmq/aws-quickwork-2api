@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"quickwork-openai/internal/store"
@@ -156,14 +155,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	bridgePrompt := buildToolBridgePrompt(req.Tools, req.Functions, choiceMode, choiceName, parallelTools)
 	bridgeActive := bridgePrompt != ""
-	if bridgeActive {
-		// Keep tool transport instructions with the caller context. They must
-		// remain visible when the caller's system rules specify native tool use.
-		if systemPromptText != "" {
-			systemPromptText += "\n\n"
-		}
-		systemPromptText += bridgePrompt
-	}
 	bridgeAllowed := allowedTools
 	if choiceMode == "function" && choiceName != "" {
 		bridgeAllowed = map[string]bool{choiceName: true}
@@ -178,10 +169,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		ThreadID:     threadID,
 		Title:        titleFor(lastUserText(req.Messages)),
 		SystemPrompt: systemPromptText,
+		ToolPrompt:   bridgePrompt,
 		Attachments:  attachments,
 	}
 	ctx = diagnostics.With(ctx, "completion_id", id)
 	logPreparedContext(ctx, in, bridgeActive, choiceMode, choiceName)
+	in, err = prepareNativeContext(ctx, in)
+	if err != nil {
+		diagnostics.Event(ctx, "warn", "chat.context.prepare_failed", "error", err)
+		writeOpenAIError(w, http.StatusBadRequest, "context_length_exceeded", err.Error())
+		return
+	}
 
 	if !req.Stream {
 		var res ChatResult
@@ -211,16 +209,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			lastErr = err
+			if requestRefused(err) {
+				break
+			}
 			s.accounts.ReportFailure(attemptCtx, acct.ID, err)
 			if ctx.Err() != nil {
 				break
 			}
 		}
 		if lastErr != nil {
-			status, code := http.StatusBadGateway, "upstream_error"
-			if errors.Is(lastErr, accounts.ErrNoAccounts) {
-				status, code = http.StatusUnauthorized, "upstream_session_unavailable"
-			}
+			status, code := chatErrorStatus(lastErr)
 			writeOpenAIError(w, status, code, lastErr.Error())
 			return
 		}
@@ -328,12 +326,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			}},
 		})
 	}
-	writeStreamError := func(message string) {
+	writeStreamError := func(message string, code string) {
 		diagnostics.Event(ctx, "error", "chat.response.stream_error", "error_message", message, "stream_started", started)
 		writePayload(map[string]any{"error": map[string]any{
 			"message": message,
-			"type":    "upstream_error",
-			"code":    "upstream_error",
+			"type":    code,
+			"code":    code,
 		}})
 	}
 	mediaText := mediaStream{emit: func(text string) { writeChunk(map[string]any{"content": text}, nil) }}
@@ -445,6 +443,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		lastErr = err
+		if requestRefused(err) {
+			break
+		}
 		s.accounts.ReportFailure(attemptCtx, acct.ID, err)
 		if started || ctx.Err() != nil {
 			break
@@ -464,14 +465,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			mediaText.push("", true, func(link string) string { return replaceNativeLinks(link, nil) })
 		}
 		if !started {
-			status, code := http.StatusBadGateway, "upstream_error"
-			if errors.Is(lastErr, accounts.ErrNoAccounts) {
-				status, code = http.StatusUnauthorized, "upstream_session_unavailable"
-			}
+			status, code := chatErrorStatus(lastErr)
 			writeOpenAIError(w, status, code, lastErr.Error())
 			return
 		}
-		writeStreamError(lastErr.Error())
+		_, code := chatErrorStatus(lastErr)
+		writeStreamError(lastErr.Error(), code)
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return
@@ -503,7 +502,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			writeChunk(map[string]any{}, "tool_calls")
 		} else {
 			if strings.TrimSpace(text) == "" && len(res.Files) == 0 {
-				writeStreamError("upstream returned no text or tool calls")
+				writeStreamError("upstream returned no text or tool calls", "upstream_error")
 				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
@@ -531,7 +530,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !sawText && !sawTool && len(res.Files) == 0 {
-		writeStreamError("upstream returned no text or tool calls")
+		writeStreamError("upstream returned no text or tool calls", "upstream_error")
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
 		return

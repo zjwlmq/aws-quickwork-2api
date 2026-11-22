@@ -33,7 +33,8 @@ func logChatRequest(ctx context.Context, req *ChatRequest) {
 }
 
 func logPreparedContext(ctx context.Context, in ChatInput, bridge bool, choiceMode, choiceName string) {
-	diagnostics.Event(ctx, "info", "chat.context.prepared", "mapped_model", in.Model, "prompt_bytes", len(in.Prompt), "prompt_sha256", diagnostics.Fingerprint(in.Prompt), "custom_prompt_present", in.SystemPrompt != "", "custom_prompt_bytes", len(in.SystemPrompt), "custom_prompt_sha256", diagnostics.Fingerprint(in.SystemPrompt), "system_wire_field", "custom_prompt", "tool_bridge", bridge, "tool_choice_mode", choiceMode, "tool_choice_name", choiceName, "attachments", attachmentMetadata(in.Attachments), "thread_reused", in.ThreadID != "")
+	combined := joinContext(in.SystemPrompt, in.ToolPrompt)
+	diagnostics.Event(ctx, "info", "chat.context.prepared", "mapped_model", in.Model, "prompt_bytes", len(in.Prompt), "prompt_sha256", diagnostics.Fingerprint(in.Prompt), "custom_prompt_present", combined != "", "custom_prompt_bytes", len(combined), "custom_prompt_sha256", diagnostics.Fingerprint(combined), "application_instructions_bytes", len(in.SystemPrompt), "tool_protocol_bytes", len(in.ToolPrompt), "system_wire_field", "custom_prompt", "tool_bridge", bridge, "tool_choice_mode", choiceMode, "tool_choice_name", choiceName, "attachments", attachmentMetadata(in.Attachments), "thread_reused", in.ThreadID != "")
 }
 
 func attachmentMetadata(items []Attachment) []any {

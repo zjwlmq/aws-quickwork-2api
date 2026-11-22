@@ -58,7 +58,7 @@ func buildToolBridgePrompt(tools []Tool, functions []ToolFunction, mode, name st
 	if len(defs) == 0 {
 		return ""
 	}
-	body, err := json.MarshalIndent(defs, "", "  ")
+	body, err := json.Marshal(defs)
 	if err != nil {
 		return ""
 	}

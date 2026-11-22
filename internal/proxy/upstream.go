@@ -39,7 +39,9 @@ type ChatInput struct {
 	ThreadID        string
 	Title           string
 	SystemPrompt    string
+	ToolPrompt      string
 	Attachments     []Attachment
+	contextPrepared bool
 	KeepSession     bool
 	ArtifactHandler ArtifactHandler
 }
@@ -93,6 +95,12 @@ type ChatResult struct {
 func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEvent EventFunc) (result ChatResult, err error) {
 	if strings.TrimSpace(in.Prompt) == "" {
 		return ChatResult{}, fmt.Errorf("prompt is empty")
+	}
+	if !in.contextPrepared {
+		in, err = prepareNativeContext(ctx, in)
+		if err != nil {
+			return ChatResult{}, err
+		}
 	}
 	threadID := strings.TrimSpace(in.ThreadID)
 	if threadID == "" {
@@ -158,13 +166,17 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		if err != nil {
 			return err
 		}
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		err = conn.WriteMessage(messageType, frame)
 		kind := ""
 		if obj, ok := v.(map[string]any); ok {
 			kind, _ = obj["type"].(string)
 		}
+		if kind == "user_message" && len(frame) > 64<<10 {
+			diagnostics.Event(ctx, "warn", "upstream.message.too_large", "frame_bytes", len(frame), "frame_budget_bytes", 64<<10)
+			return &upstreamRequestError{code: "context_length_exceeded", message: "完整请求封装超过 Quick 的 64 KiB 传输上限；内容未截断，请缩短会话或减少附件后重试"}
+		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		err = conn.WriteMessage(messageType, frame)
 		level := "debug"
 		if err != nil {
 			level = "error"
@@ -221,6 +233,11 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		"type":    "session_create",
 		"payload": map[string]any{"session_id": threadID, "title": title},
 	})
+	if !u.cfg.KeepSessions && !in.KeepSession {
+		defer func() {
+			_ = send(map[string]any{"type": "session_delete", "payload": map[string]any{"session_id": threadID}})
+		}()
+	}
 
 	payload := map[string]any{
 		"text":               in.Prompt,
@@ -271,9 +288,6 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		}
 	}
 
-	if !u.cfg.KeepSessions && !in.KeepSession {
-		_ = send(map[string]any{"type": "session_delete", "payload": map[string]any{"session_id": threadID}})
-	}
 	return result, nil
 }
 
@@ -491,7 +505,7 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 			Type      string          `json:"type"`
 			Payload   json.RawMessage `json:"payload"`
 			MessageID string          `json:"message_id"`
-			Error     string          `json:"error"`
+			Error     json.RawMessage `json:"error"`
 			ErrorCode string          `json:"error_code"`
 		}
 		if err := json.Unmarshal([]byte(jsonStr), &env); err != nil {
@@ -785,9 +799,13 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 			}
 		case "error", "session_error", "stream_error", "turn_failed":
 			finishReason = env.Type
-			diagnostics.Event(ctx, "error", "upstream.error", "event_type", env.Type, "error_code", env.ErrorCode, "error_message", errorText(env.Payload, env.Error, env.ErrorCode))
+			message := errorText(env.Payload, "", "")
+			if message == "unknown upstream error" {
+				message = errorText(json.RawMessage(jsonStr), "", env.ErrorCode)
+			}
+			diagnostics.Event(ctx, "error", "upstream.error", "event_type", env.Type, "error_code", env.ErrorCode, "error_message", message, "envelope_metadata", nativeEventMetadata(json.RawMessage(jsonStr)))
 			res, _ := finish()
-			return res, fmt.Errorf("upstream %s: %s", env.Type, errorText(env.Payload, env.Error, env.ErrorCode))
+			return res, nativeReplyError(env.Type, message)
 		default:
 			if terminal[env.Type] {
 				finishReason = env.Type
@@ -847,17 +865,35 @@ func rawText(raw json.RawMessage) string {
 }
 
 func errorText(raw json.RawMessage, fallback, code string) string {
-	var p struct {
-		Message string `json:"message"`
-		Error   string `json:"error"`
-		Code    string `json:"code"`
+	var value any
+	_ = json.Unmarshal(raw, &value)
+	var find func(any, int) string
+	find = func(v any, depth int) string {
+		if depth > 6 {
+			return ""
+		}
+		switch x := v.(type) {
+		case string:
+			return strings.TrimSpace(x)
+		case map[string]any:
+			// Only inspect error fields; never serialize arbitrary echoed input.
+			for _, key := range []string{"message", "detail", "error", "description", "reason", "errors", "msg", "error_code", "code"} {
+				if message := find(x[key], depth+1); message != "" {
+					return message
+				}
+			}
+		case []any:
+			for _, item := range x {
+				if message := find(item, depth+1); message != "" {
+					return message
+				}
+			}
+		}
+		return ""
 	}
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &p)
-	}
-	for _, s := range []string{p.Message, p.Error, fallback, p.Code, code} {
+	for _, s := range []string{find(value, 0), fallback, code} {
 		if strings.TrimSpace(s) != "" {
-			return s
+			return diagnostics.RedactText(s, 2048)
 		}
 	}
 	return "unknown upstream error"
