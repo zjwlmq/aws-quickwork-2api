@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +19,7 @@ import (
 	"time"
 
 	"quickwork-openai/internal/accounts"
+	"quickwork-openai/internal/admin"
 	"quickwork-openai/internal/config"
 	"quickwork-openai/internal/oauth"
 	"quickwork-openai/internal/proxy"
@@ -40,6 +45,8 @@ func run(args []string) int {
 		return refreshAccounts(args[1:])
 	case "logout":
 		return logout(args[1:])
+	case "admin-hash":
+		return adminHash(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return 0
@@ -64,6 +71,7 @@ Usage:
   quickproxy accounts [-config config.json]
   quickproxy refresh  [-config config.json] [-account ID]
   quickproxy logout   [-config config.json] (-all | -account ID)
+  quickproxy admin-hash [-generate]  # otherwise read password from stdin
 
 Running without a subcommand is equivalent to "serve".
 
@@ -71,6 +79,39 @@ config.json is created with defaults on first use. Accounts are stored in the
 SQLite database named by "database" in config.json. When multiple accounts are
 present, requests rotate through them round-robin.
 `)
+}
+
+func adminHash(args []string) int {
+	fs := flag.NewFlagSet("admin-hash", flag.ExitOnError)
+	generate := fs.Bool("generate", false, "generate a password and print credentials as JSON")
+	_ = fs.Parse(args)
+	var password string
+	if *generate {
+		secret := make([]byte, 18)
+		if _, err := rand.Read(secret); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		password = base64.RawURLEncoding.EncodeToString(secret)
+	} else {
+		raw, err := io.ReadAll(io.LimitReader(os.Stdin, 1026))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		password = strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
+	}
+	hash, err := admin.HashPassword(password)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if *generate {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"password": password, "password_hash": hash})
+	} else {
+		fmt.Println(hash)
+	}
+	return 0
 }
 
 func loadConfig(path string) (*config.Config, error) {
@@ -105,6 +146,17 @@ func serve(args []string) int {
 	mgr := accounts.New(st, cfg)
 	count, _ := mgr.EnabledCount(context.Background())
 	handler := proxy.NewServer(cfg, mgr).Handler()
+	if cfg.Admin.Enabled {
+		console, err := admin.New(cfg, st, mgr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "admin:", err)
+			return 1
+		}
+		mux := http.NewServeMux()
+		mux.Handle("/admin/", console.Handler())
+		mux.Handle("/", handler)
+		handler = mux
+	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           handler,

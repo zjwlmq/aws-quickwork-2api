@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Quickwork · 账号控制台</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/admin/styles.css" />
+    <script src="/admin/app.js" defer></script>
+  </head>
+  <body>
+    <svg
+      class="svg-library"
+      aria-hidden="true"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <symbol id="i-user" viewBox="0 0 24 24">
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4 22v-2a8 8 0 0 1 16 0v2" />
+      </symbol>
+      <symbol id="i-link" viewBox="0 0 24 24">
+        <path
+          d="m10 13 4-4m-6 6-2 2a4.3 4.3 0 0 1-6-6l5-5a4.3 4.3 0 0 1 6 0m2 3 2-2a4.3 4.3 0 0 1 6 6l-5 5a4.3 4.3 0 0 1-6 0"
+          transform="translate(1 0)"
+        />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M20 7a9 9 0 1 0 1 9M20 2v6h-6" />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24">
+        <path d="M12 4v16M4 12h16" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="10.5" cy="10.5" r="7" />
+        <path d="m16 16 5 5" />
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24">
+        <rect x="8" y="8" width="13" height="13" rx="2" />
+        <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
+      </symbol>
+      <symbol id="i-logout" viewBox="0 0 24 24">
+        <path d="M10 3H4v18h6M8 12h13m-5-5 5 5-5 5" />
+      </symbol>
+      <symbol id="i-close" viewBox="0 0 24 24">
+        <path d="m6 6 12 12M6 18 18 6" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24">
+        <path d="m5 12 4 4L20 5" />
+      </symbol>
+      <symbol id="i-external" viewBox="0 0 24 24">
+        <path
+          d="M14 3h7v7m0-7L10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"
+        />
+      </symbol>
+    </svg>
+
+    <div id="loading-screen" class="loading-screen" role="status">
+      <strong>Quickwork</strong><span>正在连接账号控制台…</span>
+    </div>
+
+    <main id="login-screen" class="login-screen" hidden>
+      <div class="login-brand">
+        <strong>Quickwork</strong><span>账号控制台</span>
+      </div>
+      <section class="login-card">
+        <div class="login-symbol">
+          <svg class="icon" aria-hidden="true"><use href="#i-user" /></svg>
+        </div>
+        <h1>登录账号控制台</h1>
+        <p>使用管理员账号管理 Amazon Quick 授权。</p>
+        <form id="login-form">
+          <label for="username">用户名</label>
+          <input
+            id="username"
+            name="username"
+            autocomplete="username"
+            value="admin"
+            maxlength="128"
+            required
+          />
+          <label for="password">密码</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            maxlength="1024"
+            required
+          />
+          <div id="login-error" class="form-error" role="alert" hidden></div>
+          <button id="login-submit" class="button primary full" type="submit">
+            登录
+          </button>
+        </form>
+      </section>
+      <p class="login-footer">Amazon Quick · OpenAI 兼容 API</p>
+    </main>
+
+    <div id="console" class="console" hidden>
+      <aside class="sidebar" aria-label="控制台导航">
+        <a class="brand" href="/admin/"
+          ><strong>Quickwork</strong><span>账号控制台</span></a
+        >
+        <nav>
+          <button
+            class="nav-item selected"
+            id="nav-accounts"
+            type="button"
+            aria-current="page"
+          >
+            <svg class="icon" aria-hidden="true"><use href="#i-user" /></svg
+            ><span>账号管理</span>
+          </button>
+          <button class="nav-item" id="nav-connection" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-link" /></svg
+            ><span>接入信息</span>
+          </button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="admin-label">
+            <svg class="icon" aria-hidden="true"><use href="#i-user" /></svg
+            ><span id="admin-label">管理员</span>
+          </div>
+          <button class="nav-item" id="logout-button" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-logout" /></svg
+            ><span>退出登录</span>
+          </button>
+        </div>
+      </aside>
+      <main class="workspace">
+        <header class="page-header">
+          <div>
+            <h1 id="page-title">账号管理</h1>
+            <p id="page-description">
+              管理 Amazon Quick 授权，账号自动轮询使用。
+            </p>
+          </div>
+          <div class="header-actions" id="header-actions">
+            <button class="button" id="refresh-list" type="button">
+              <svg class="icon" aria-hidden="true">
+                <use href="#i-refresh" /></svg
+              ><span>更新列表</span>
+            </button>
+            <button class="button primary" data-add-account type="button">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg
+              ><span>添加账号</span>
+            </button>
+          </div>
+        </header>
+        <div id="page-error" class="page-error" role="alert" hidden>
+          <span id="page-error-text"></span
+          ><button class="text-button" id="retry-load" type="button">
+            重试
+          </button>
+        </div>
+
+        <section id="accounts-section" aria-label="账号管理">
+          <div class="summary" aria-label="账号概况">
+            <div><span>全部账号</span><strong id="count-total">0</strong></div>
+            <div><span>可用账号</span><strong id="count-ready">0</strong></div>
+            <div>
+              <span>需要处理</span><strong id="count-attention">0</strong>
+            </div>
+          </div>
+          <section class="accounts-panel" aria-label="账号列表">
+            <div class="table-toolbar">
+              <div class="search-field">
+                <svg class="icon" aria-hidden="true">
+                  <use href="#i-search" /></svg
+                ><input
+                  id="account-search"
+                  type="search"
+                  placeholder="搜索账号"
+                  aria-label="搜索账号"
+                  autocomplete="off"
+                />
+              </div>
+              <select id="status-filter" aria-label="筛选账号状态">
+                <option value="all">全部状态</option>
+                <option value="ready">可用</option>
+                <option value="expired">待刷新</option>
+                <option value="error">异常</option>
+                <option value="disabled">已停用</option>
+              </select>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>账号</th>
+                    <th>登录方式</th>
+                    <th>状态</th>
+                    <th>到期时间</th>
+                    <th>调用次数</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="account-rows"></tbody>
+              </table>
+              <div id="empty-state" class="empty-state" hidden>
+                <svg class="empty-icon" aria-hidden="true">
+                  <use href="#i-user" />
+                </svg>
+                <h2 id="empty-title">暂无账号</h2>
+                <p id="empty-description">
+                  添加第一个 Amazon Quick 账号，开始使用 API。
+                </p>
+                <button
+                  class="button primary"
+                  id="empty-add"
+                  data-add-account
+                  type="button"
+                >
+                  添加账号
+                </button>
+              </div>
+              <div class="table-loading" id="table-loading" role="status">
+                <span></span><span></span><span></span>
+                <p>正在读取账号…</p>
+              </div>
+            </div>
+          </section>
+          <p class="privacy-note">账号凭据仅保存在服务器，列表不展示 Token。</p>
+        </section>
+
+        <section
+          class="connection-panel"
+          id="connection-panel"
+          aria-labelledby="connection-title"
+        >
+          <h2 id="connection-title">API 接入</h2>
+          <div class="connection-row">
+            <span class="field-label">Base URL</span><code id="base-url">—</code
+            ><button class="button small" id="copy-base" type="button">
+              <svg class="icon" aria-hidden="true"><use href="#i-copy" /></svg
+              ><span>复制</span>
+            </button>
+          </div>
+          <div class="connection-row">
+            <span class="field-label">模型</span>
+            <div class="model-list" id="model-list"></div>
+          </div>
+          <div id="key-details" hidden>
+            <div class="connection-row key-row">
+              <label class="field-label" for="api-key">API Key</label
+              ><input
+                id="api-key"
+                type="password"
+                readonly
+                autocomplete="off"
+                aria-label="API Key"
+              /><button
+                class="button small"
+                id="reveal-key"
+                type="button"
+                aria-pressed="false"
+              >
+                显示</button
+              ><button class="button small" id="copy-key" type="button">
+                复制
+              </button>
+            </div>
+            <p class="privacy-note">
+              在 OpenAI 兼容客户端中填写以上地址、API Key 和模型名。
+            </p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="add-dialog" class="modal" aria-labelledby="add-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="add-title">添加账号</h2>
+          <p>将 Amazon Quick 账号授权到此服务。</p>
+        </div>
+        <button
+          class="icon-button"
+          id="close-add"
+          type="button"
+          aria-label="关闭添加账号"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <ol class="steps" aria-label="授权进度">
+        <li id="step-discovery" class="active"><span>1</span>登录账号</li>
+        <li id="step-authorize"><span>2</span>确认授权</li>
+        <li id="step-complete"><span>3</span>完成</li>
+      </ol>
+      <form id="create-flow-form">
+        <label for="provider">登录方式</label
+        ><select id="provider">
+          <option value="social">社交账号（默认）</option>
+          <option value="enterprise">企业 SSO</option>
+        </select>
+        <div id="region-field" hidden>
+          <label for="region">AWS 区域</label
+          ><input
+            id="region"
+            value="us-east-1"
+            autocomplete="off"
+            maxlength="64"
+          />
+        </div>
+        <p class="form-hint">
+          适用于服务器远程授权。登录后，将浏览器回调地址粘贴回此窗口即可。
+        </p>
+        <button
+          class="button primary full"
+          id="create-flow-button"
+          type="submit"
+        >
+          生成授权链接
+        </button>
+      </form>
+      <form id="callback-form" hidden>
+        <h3 id="authorization-title">第一步：登录 Amazon Quick</h3>
+        <p class="authorization-description" id="authorization-description"></p>
+        <a
+          class="button external-link"
+          id="authorization-url"
+          target="_blank"
+          rel="noopener noreferrer"
+          ><span id="authorization-link-label">打开 Amazon Quick</span
+          ><svg class="icon" aria-hidden="true"><use href="#i-external" /></svg
+        ></a>
+        <label for="callback-url">浏览器回调地址</label
+        ><textarea
+          id="callback-url"
+          rows="4"
+          spellcheck="false"
+          autocomplete="off"
+          maxlength="60000"
+          placeholder="粘贴 http://localhost:18080/… 的完整地址"
+          required
+        ></textarea>
+        <p class="form-hint">
+          localhost 页面打不开是正常现象，复制地址栏中的完整地址即可。授权链接
+          30 分钟内有效。
+        </p>
+        <button class="button primary full" id="submit-callback" type="submit">
+          提交并继续
+        </button>
+      </form>
+      <div id="flow-success" class="flow-success" hidden>
+        <div class="success-symbol">
+          <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+        </div>
+        <h3>账号添加成功</h3>
+        <p>账号已加入轮询，后续会自动刷新登录状态。</p>
+        <button class="button primary full" id="finish-flow" type="button">
+          完成
+        </button>
+      </div>
+      <div id="flow-error" class="form-error" role="alert" hidden></div>
+    </dialog>
+
+    <dialog
+      id="delete-dialog"
+      class="modal delete-modal"
+      aria-labelledby="delete-title"
+    >
+      <div class="modal-header">
+        <h2 id="delete-title">删除账号</h2>
+        <button
+          class="icon-button"
+          id="close-delete"
+          type="button"
+          aria-label="关闭删除确认"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <p>确认删除 <strong id="delete-account-name"></strong>？</p>
+      <p class="form-hint">账号将从轮询中移除，需要重新授权才能恢复。</p>
+      <div id="delete-error" class="form-error" role="alert" hidden></div>
+      <div class="modal-actions">
+        <button class="button" id="cancel-delete" type="button">取消</button
+        ><button class="button danger" id="confirm-delete" type="button">
+          删除账号
+        </button>
+      </div>
+    </dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
+  </body>
+</html>

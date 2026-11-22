@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +51,15 @@ type OAuth struct {
 	Timeout      Duration `json:"timeout"`
 }
 
+// Admin configures the optional web console. PasswordHash is a salted PBKDF2
+// digest, never a plaintext password. API keys do not grant console access.
+type Admin struct {
+	Enabled      bool   `json:"enabled"`
+	Username     string `json:"username"`
+	PasswordHash string `json:"password_hash"`
+	PublicURL    string `json:"public_url"`
+}
+
 // Config is the server configuration stored in config.json.
 type Config struct {
 	Addr             string   `json:"addr"`
@@ -68,6 +79,7 @@ type Config struct {
 	ThinkingEffort   string   `json:"thinking_effort"`
 	KeepSessions     bool     `json:"keep_sessions"`
 	OAuth            OAuth    `json:"oauth"`
+	Admin            Admin    `json:"admin"`
 
 	// Path is the absolute config file path; not serialized.
 	Path string `json:"-"`
@@ -195,6 +207,23 @@ func applyDefaults(c *Config) {
 }
 
 func (c *Config) validate() error {
+	if c.Admin.Enabled {
+		if c.Admin.Username == "" || c.Admin.PasswordHash == "" {
+			return errors.New("admin.username and admin.password_hash are required")
+		}
+		u, err := url.Parse(c.Admin.PublicURL)
+		if err != nil || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("admin.public_url must be an origin such as https://example.com")
+		}
+		local := u.Hostname() == "localhost"
+		if ip := net.ParseIP(u.Hostname()); ip != nil {
+			local = ip.IsLoopback()
+		}
+		if u.Scheme != "https" && !(u.Scheme == "http" && local) {
+			return errors.New("admin.public_url requires HTTPS except on loopback addresses")
+		}
+		c.Admin.PublicURL = strings.TrimRight(c.Admin.PublicURL, "/")
+	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("request_timeout must be positive")
 	}

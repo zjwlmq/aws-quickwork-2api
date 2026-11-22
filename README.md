@@ -319,6 +319,40 @@ quickwork-openai/
   data/quickwork.db        运行期账号库（gitignored）
 ```
 
+## 网页账号管理（此部署扩展）
+
+本分支提供 `/admin/` 账号控制台，包含管理员登录、账号列表与搜索筛选、
+远程 OAuth 授权、刷新、启用/停用和删除，以及 API 接入信息。
+沿用原有 SQLite 账号库和轮询逻辑；账号列表不会返回 access token、refresh token 或 client secret。
+
+先运行 `quickproxy admin-hash -generate` 生成管理员密码与 PBKDF2 密码摘要，
+妥善保存输出中的密码，将 `password_hash` 填入配置：
+
+```json
+{
+  "admin": {
+    "enabled": true,
+    "username": "admin",
+    "password_hash": "填写 admin-hash 生成的 password_hash",
+    "public_url": "https://your-domain.example"
+  }
+}
+```
+
+重启服务后访问 `https://your-domain.example/admin/`。
+API Key 和管理员密码分别用于 API 与控制台，API Key 不能登录控制台。
+`public_url` 必须与浏览器访问的 HTTPS 来源一致；开发时允许使用 HTTP 回环地址。
+反向代理需要保留原始 Host 和 Origin，并关闭 `/admin/` 响应缓存。
+
+添加账号时先生成授权链接，打开 Amazon Quick 登录页面。页面跳转到
+`localhost` 后复制完整地址，回到控制台粘贴并提交；按提示再次授权并提交
+含 `code` 和 `state` 的回调地址即可完成。localhost 页面无法打开属于预期行为。
+每次授权有效期为 30 分钟，关闭窗口会取消该流程。
+
+修改管理员密码时，重新生成摘要并更新 `config.json` 中的 `admin.password_hash`，
+随后重启服务。也可将新密码通过标准输入传给 `quickproxy admin-hash`，只输出摘要。
+重启会撤销已有的管理员登录会话。
+
 ## License
 
 本项目采用 [GNU General Public License v3.0](LICENSE) 授权。
