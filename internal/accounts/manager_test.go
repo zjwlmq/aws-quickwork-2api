@@ -67,6 +67,26 @@ func TestNextRoundRobin(t *testing.T) {
 	}
 }
 
+func TestMetadataReadDoesNotRotateOrCountCalls(t *testing.T) {
+	mgr, st := testManager(t)
+	ctx := context.Background()
+	a := validAccount("metadata@example.test")
+	a.Disabled = true
+	if err := st.Save(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		fresh, err := mgr.GetFresh(ctx, a.ID)
+		if err != nil || fresh.ID != a.ID || !fresh.Disabled {
+			t.Fatalf("metadata lookup: %v %+v", err, fresh)
+		}
+	}
+	stored, _ := st.Get(ctx, a.ID)
+	if stored.UseCount != 0 || stored.LastUsedAt != 0 || mgr.next.Load() != 0 {
+		t.Fatal("metadata lookup affected chat rotation")
+	}
+}
+
 func TestNextSkipsExpiredWithoutRefreshToken(t *testing.T) {
 	mgr, st := testManager(t)
 	ctx := context.Background()

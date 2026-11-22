@@ -43,6 +43,9 @@ type Server struct {
 	loginSlots chan struct{}
 	media      MediaConsole
 	requests   *requestlog.Recorder
+	quotaMu    sync.Mutex
+	quotas     map[int64]*quotaCache
+	quotaHTTP  *http.Client
 }
 
 type MediaConsole interface {
@@ -61,7 +64,8 @@ func New(cfg *config.Config, st *store.Store, manager *accounts.Manager, media .
 	}
 	s := &Server{cfg: cfg, store: st, manager: manager,
 		sessions: make(map[string]*session), attempts: make(map[string]loginAttempts),
-		flows: make(map[string]pendingLogin), loginSlots: make(chan struct{}, 2)}
+		flows: make(map[string]pendingLogin), loginSlots: make(chan struct{}, 2),
+		quotas: make(map[int64]*quotaCache), quotaHTTP: newQuotaHTTP()}
 	if len(media) > 0 {
 		s.media = media[0]
 	}
@@ -74,6 +78,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/api/session", s.requireSession(s.sessionInfo))
 	mux.HandleFunc("POST /admin/api/logout", s.requireSession(s.logout))
 	mux.HandleFunc("GET /admin/api/accounts", s.requireSession(s.listAccounts))
+	mux.HandleFunc("GET /admin/api/quotas", s.requireSession(s.listQuotas))
+	mux.HandleFunc("POST /admin/api/quotas/refresh", s.requireSession(s.listQuotas))
 	mux.HandleFunc("POST /admin/api/accounts/{id}/refresh", s.requireSession(s.refreshAccount))
 	mux.HandleFunc("PATCH /admin/api/accounts/{id}", s.requireSession(s.toggleAccount))
 	mux.HandleFunc("DELETE /admin/api/accounts/{id}", s.requireSession(s.deleteAccount))

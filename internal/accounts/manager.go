@@ -107,6 +107,17 @@ func (m *Manager) ensureFresh(ctx context.Context, a *store.Account) (*store.Acc
 	return m.refreshLocked(ctx, latest)
 }
 
+// GetFresh returns an account for metadata queries without rotating accounts or
+// incrementing chat usage. Disabled accounts can still have their quota checked.
+func (m *Manager) GetFresh(ctx context.Context, id int64) (*store.Account, error) {
+	a, err := m.store.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	diagnostics.RegisterSecrets(a.AccessToken, a.RefreshToken, a.IDToken, a.ClientSecret)
+	return m.ensureFresh(ctx, a)
+}
+
 // refreshLocked refreshes and persists one account. The caller holds its lock.
 func (m *Manager) refreshLocked(ctx context.Context, a *store.Account) (*store.Account, error) {
 	diagnostics.RegisterSecrets(a.AccessToken, a.RefreshToken, a.IDToken)

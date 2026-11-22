@@ -4,6 +4,8 @@
   const state = {
     session: null,
     accounts: [],
+    quotas: [],
+    quotaLoading: false,
     connection: null,
     flow: null,
     deleting: null,
@@ -30,6 +32,8 @@
   let requestLoadVersion = 0;
   let requestDetailVersion = 0;
   let requestSearchTimer;
+  let quotaPollTimer;
+  let quotaLoadVersion = 0;
   function errorAt(id, message) {
     $(id).textContent = message || "";
     $(id).hidden = !message;
@@ -87,6 +91,13 @@
   function showLogin() {
     state.session = null;
     state.accounts = [];
+    state.quotas = [];
+    state.quotaLoading = false;
+    quotaLoadVersion++;
+    clearTimeout(quotaPollTimer);
+    $("quota-cards").replaceChildren();
+    $("quota-updated").textContent = "";
+    errorAt("quota-error", "");
     state.connection = null;
     state.flow = null;
     state.videos = [];
@@ -171,6 +182,16 @@
         }).format(new Date(epoch * 1000))
       : "—";
   }
+  function filteredAccounts() {
+    const query = $("account-search").value.trim().toLowerCase();
+    const filter = $("status-filter").value;
+    return state.accounts.filter(
+      (a) =>
+        (!query ||
+          `${a.name} ${a.email} ${a.id}`.toLowerCase().includes(query)) &&
+        (filter === "all" || a.status === filter),
+    );
+  }
   function renderAccounts() {
     $("count-total").textContent = state.accounts.length;
     $("count-ready").textContent = state.accounts.filter(
@@ -179,14 +200,7 @@
     $("count-attention").textContent = state.accounts.filter(
       (a) => a.status === "error" || a.status === "expired",
     ).length;
-    const query = $("account-search").value.trim().toLowerCase();
-    const filter = $("status-filter").value;
-    const list = state.accounts.filter(
-      (a) =>
-        (!query ||
-          `${a.name} ${a.email} ${a.id}`.toLowerCase().includes(query)) &&
-        (filter === "all" || a.status === filter),
-    );
+    const list = filteredAccounts();
     $("account-rows").innerHTML = list
       .map((a) => {
         const name = a.email || a.name || `账号 ${a.id}`;
@@ -206,6 +220,137 @@
       ? "试试其他关键词，或切换账号状态。"
       : "添加第一个 Amazon Quick 账号，开始使用 API。";
     $("empty-add").hidden = filtered;
+    renderQuotas();
+  }
+  function quotaPercent(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+    if (value > 0 && value < 0.1) return "<0.1%";
+    if (value < 100 && value > 99.9) return "99.9%";
+    return (
+      new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(
+        value,
+      ) + "%"
+    );
+  }
+  function quotaPlan(subscription) {
+    const kind = subscription?.type || "";
+    if (kind.includes("FREE_TRIAL")) return "免费试用";
+    for (const plan of [
+      "MAX",
+      "PLUS",
+      "PROFESSIONAL",
+      "ENTERPRISE",
+      "ESSENTIALS",
+      "FREE",
+    ])
+      if (kind.includes(plan))
+        return plan === "FREE" ? "Free" : plan[0] + plan.slice(1).toLowerCase();
+    return "Quick 账号";
+  }
+  function quotaWindowHTML(window, label, name) {
+    const hasValue =
+      typeof window?.remaining_percent === "number" &&
+      Number.isFinite(window.remaining_percent);
+    const used = hasValue ? Math.min(100, Math.max(0, window.used_percent)) : 0;
+    const severity =
+      window?.warning?.severity === "error" ||
+      (hasValue && window.remaining_percent === 0)
+        ? "error"
+        : window?.warning?.severity === "warning" ||
+            (hasValue && window.remaining_percent <= 10)
+          ? "warning"
+          : "normal";
+    const reset = window?.resets_at
+      ? `${date(window.resets_at)} 重置`
+      : window?.resume_in_minutes > 0
+        ? `约 ${window.resume_in_minutes} 分钟后恢复`
+        : "";
+    return `<div class="quota-window ${severity}"><div class="quota-window-heading"><span>${escape(label)}剩余</span><strong>${hasValue ? escape(quotaPercent(window.remaining_percent)) : "—"}</strong></div><div class="quota-window-caption"><span>${hasValue ? "已用 " + escape(quotaPercent(window.used_percent)) : "上游暂未提供可计算的额度"}</span>${reset ? `<span>${escape(reset)}</span>` : ""}</div>${hasValue ? `<progress class="quota-track" max="100" value="${used}" aria-label="${escape(name + " " + label + "已使用")}"></progress>` : ""}${window?.warning?.description ? `<p class="quota-warning">${escape(window.warning.description)}</p>` : ""}</div>`;
+  }
+  function renderQuotas() {
+    $("quota-panel").hidden = state.accounts.length === 0;
+    const byID = new Map(state.quotas.map((item) => [item.account_id, item]));
+    $("quota-cards").innerHTML = filteredAccounts()
+      .map((account) => {
+        const item = byID.get(account.id);
+        const name = account.email || account.name || `账号 ${account.id}`;
+        const hasData =
+          item?.status === "available" || item?.status === "stale";
+        const trial = item?.subscription?.trial_expires_at;
+        const trialText = trial
+          ? `试用${trial <= Date.now() / 1000 ? "已到期" : "到期"} ${date(trial)}`
+          : "";
+        const note =
+          item?.status === "stale"
+            ? `显示上次数据 · ${item.error}`
+            : item?.error ||
+              (state.quotaLoading
+                ? "正在查询账号额度…"
+                : "尚未读取额度，请点击刷新额度");
+        return `<article class="quota-card${item?.status === "stale" ? " stale" : ""}" data-quota-account="${account.id}"><div class="quota-card-heading"><div><h3 title="${escape(name)}">${escape(name)}</h3><span class="quota-account-id">账号 ${account.id}${account.disabled ? " · 已停用" : ""}</span></div><span class="quota-plan">${escape(quotaPlan(item?.subscription))}</span></div>${hasData ? quotaWindowHTML(item.monthly, "月度额度", name) + quotaWindowHTML(item.session, "会话额度", name) + (item.overage_monthly ? quotaWindowHTML(item.overage_monthly, "额外额度", name) : "") : `<p class="quota-unavailable">${escape(note)}</p>`}${hasData && item.status === "stale" ? `<p class="quota-warning">${escape(note)}</p>` : ""}<div class="quota-card-footer"><span>${escape(trialText)}</span><span>${item?.updated_at ? "更新于 " + escape(date(item.updated_at)) : ""}</span></div></article>`;
+      })
+      .join("");
+  }
+  async function loadQuotas(force = false) {
+    if (!state.session || state.page !== "accounts" || state.quotaLoading)
+      return;
+    const version = ++quotaLoadVersion;
+    state.quotaLoading = true;
+    clearTimeout(quotaPollTimer);
+    busy($("refresh-quotas"), true, "查询中…");
+    $("quota-updated").textContent = "正在从 Quick 查询…";
+    errorAt("quota-error", "");
+    renderQuotas();
+    try {
+      const data = await api(force ? "/quotas/refresh" : "/quotas", {
+        method: force ? "POST" : "GET",
+      });
+      if (
+        version !== quotaLoadVersion ||
+        !state.session ||
+        state.page !== "accounts"
+      )
+        return;
+      state.quotas = data.data;
+      const good = data.data.filter(
+        (item) => item.status === "available",
+      ).length;
+      $("quota-updated").textContent =
+        `${good} / ${data.data.length} 个账号查询成功 · 页面打开时自动更新`;
+      renderQuotas();
+    } catch (error) {
+      if (
+        version !== quotaLoadVersion ||
+        !state.session ||
+        state.page !== "accounts"
+      )
+        return;
+      errorAt("quota-error", error.message);
+      const previous = new Map(
+        state.quotas.map((item) => [item.account_id, item]),
+      );
+      state.quotas = state.accounts.map((account) => {
+        const old = previous.get(account.id);
+        return {
+          ...old,
+          account_id: account.id,
+          status: old?.updated_at ? "stale" : "error",
+          error: error.message,
+        };
+      });
+      $("quota-updated").textContent =
+        "本次更新失败，已有额度保留为上次查询结果";
+    } finally {
+      if (version === quotaLoadVersion) {
+        state.quotaLoading = false;
+        renderQuotas();
+        busy($("refresh-quotas"), false);
+        if (state.session && state.page === "accounts")
+          quotaPollTimer = setTimeout(() => {
+            if (!document.hidden) loadQuotas();
+          }, 60000);
+      }
+    }
   }
   async function loadAccounts() {
     if (state.loading) return;
@@ -216,6 +361,7 @@
       const data = await api("/accounts");
       state.accounts = data.accounts;
       renderAccounts();
+      if (state.page === "accounts") loadQuotas();
       errorAt("page-error-text", "");
       $("page-error").hidden = true;
     } catch (error) {
@@ -256,6 +402,10 @@
     videoLoadVersion++;
     logLoadVersion++;
     requestLoadVersion++;
+    quotaLoadVersion++;
+    state.quotaLoading = false;
+    clearTimeout(quotaPollTimer);
+    busy($("refresh-quotas"), false);
     state.page = page;
     $("accounts-section").hidden = page !== "accounts";
     $("header-actions").hidden = page !== "accounts";
@@ -290,6 +440,7 @@
     if (page === "videos") loadVideos();
     if (page === "logs") loadLogs();
     if (page === "requests") loadRequests();
+    if (page === "accounts") loadQuotas();
     for (const name of [
       "accounts",
       "connection",
@@ -979,6 +1130,11 @@
   $("nav-accounts").addEventListener("click", () => navigate("accounts"));
   $("nav-connection").addEventListener("click", () => navigate("connection"));
   $("refresh-list").addEventListener("click", loadAccounts);
+  $("refresh-quotas").addEventListener("click", () => loadQuotas(true));
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && state.session && state.page === "accounts")
+      loadQuotas();
+  });
   $("retry-load").addEventListener("click", loadAccounts);
   $("account-search").addEventListener("input", renderAccounts);
   $("status-filter").addEventListener("change", renderAccounts);
