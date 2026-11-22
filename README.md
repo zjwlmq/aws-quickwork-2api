@@ -21,7 +21,7 @@
 - 客户端 `tools` / `functions` 通过 `<client_tool_call>` 协议桥接；代理返回 OpenAI `tool_calls`，实际执行仍在客户端
 - 上游原生 `tool_start` / `tool_arguments` / `tool_result` 在名称匹配时也会转成 OpenAI `tool_calls`
 - 使用上游 `turn_usage` 返回 `usage` 与 `prompt_tokens_details.cached_tokens`
-- `system` / `developer` 消息通过 QuickWork 原生 `system_prompt` 覆盖服务端基础提示词，并附加后端提示词覆盖声明，要求模型忽略上游追加的 system / agent 指令；不拼进 user 文本
+- `system` / `developer` 消息通过 Quick 原生 `custom_prompt` 传递，保留角色和顺序；不拼进 user 文本
 
 ## 环境要求
 
@@ -259,11 +259,12 @@ sequenceDiagram
 
 ### 提示词与工具调用
 
-- `system` / `developer` 消息会按原顺序合并，放入 `user_message.payload.system_prompt`。
-- `system_prompt` 始终发送：合并后的调用方指令后面固定追加一条后端提示词覆盖声明，要求模型忽略 QuickWork 服务端附加的 system / developer / agent 指令（身份、人格、产品名、默认行为、工具偏好、回复风格等），只遵循调用方指令和对话消息。客户端未提供 system 消息时，字段只包含该声明，服务端默认提示词不再生效。已验证 social 路径，enterprise / gateway 仍待逐项验证。
-- 覆盖声明写在 `system_prompt` 里，不是 user 文本注入，也不会把 system prompt 塞进 user 文本。
+- `system` / `developer` 消息按原顺序保留角色标记，写入 `user_message.payload.custom_prompt`，与对话正文分开。
+- Quick 的官方客户端使用 `custom_prompt` 承载应用上下文；旧实现使用的 `system_prompt` 在此次 social 路径实测中被上游忽略，现已移除。没有调用方指令、也没有客户端工具时，不额外注入上下文。
+- 客户端工具定义和 RPC 编码协议也放入 `custom_prompt`，将工具参数编码为客户端能识别的事件，不再依赖追加到用户正文中的协议。
+- 该应用上下文入口不会更改 Quick 的服务权限或开放未提供的工具。已验证指令数据传递、普通用户请求与项目指令的优先关系、system 更新和真实客户端工具闭环；不代表所有模型行为都能获得与 Anthropic 服务完全相同的保证。
 - 客户端历史中的 `assistant.tool_calls` 会转成带 `id` / `name` 的文本，`role: tool` 会转成带 `call_id` / `name` 的工具结果，供上游继续推理。
-- 客户端在 `tools` / `functions` 中声明的工具会以 `<client_tool_protocol>` 追加到 system prompt；模型用 `<client_tool_call>{"name":"...","arguments":{...}}</client_tool_call>` 发起调用。
+- 客户端在 `tools` / `functions` 中声明的工具会以 `<client_tool_protocol>` 追加到应用上下文 `custom_prompt`；模型用 `<client_tool_call>{"name":"...","arguments":{...}}</client_tool_call>` 发起调用。
 - 如果客户端 system prompt 要求“必须用原生工具调用”或“禁止把工具调用写成文本”，桥接会附加一条后端能力说明：原生函数调用不可用，仅对列出的客户端工具改用该标记，其他指令保持不变。这是工具协议适配，不是通用提示词注入。
 - 代理解析该标记并返回 OpenAI `tool_calls`，但**不执行工具**；客户端执行后把结果作为 `role: tool` 发回，代理再转成文本上下文。
 - 有客户端工具时，流式响应会缓冲到本轮结束，再一次性发送 `tool_calls` 或文本；非流式不受影响。
@@ -283,7 +284,7 @@ sequenceDiagram
 
 - 提供聊天补全、原生附件传递和异步视频制作。`temperature`、`max_tokens`、`stop`、`response_format` 等采样参数不会传给上游；`n > 1` 会返回 400。
 - 工具执行在客户端；代理只负责把模型输出转成 `tool_calls`。桥接使用文本协议，模型偶尔可能不遵守；带工具的流式响应会缓冲到本轮结束。
-- `system_prompt` 覆盖已在 social 路径验证；enterprise / gateway 仍待验证。空 system 消息也会发送覆盖声明，因此服务端默认提示词不会生效。
+- `custom_prompt` 已在 social 路径验证；enterprise / gateway 的上下文行为仍待验证。
 - `model` 会映射为上游 agent mode：`smart`、`fast`、`balanced`、`auto`。
 - 上游没有模型列表 API；`/v1/models` 返回的是本项目配置的别名。
 - social / enterprise 路径已做真实账号验证；`gateway` / `social_gateway` 的 CBOR 路径仍属实验性。
@@ -404,6 +405,11 @@ curl https://your-domain.example/v1/videos \
 可使用 `Authorization: Bearer` 或 `x-api-key` 验证原有代理 API Key。
 支持普通回复、Anthropic SSE、客户端工具定义、`tool_use` 与 `tool_result`、
 图片和文档输入。工具在 Claude Code 本机执行，由原有工具桥接生成调用参数。
+同时接受顶层 `system` 与多轮历史中的 `role: "system"` 文本更新，按顺序传递到 Quick 的应用上下文。
+
+此次已用真实 Claude Code 验证：两个模块的代码修复、12 项单元测试、9 轮连续工具流程、
+stdio MCP 工具调用、MCP 错误反馈后的重试，以及跨多轮保留的项目编码规范。
+测试不覆盖任意大型仓库、所有 MCP 传输/认证方式或无限工具轮数；真实上下文窗口上限仍未测定。
 
 Claude Code 的 Base URL 使用域名根地址，**不要添加 `/v1`**。
 管理员可在 `/admin/#connection` 直接复制带当前 Key 的 PowerShell 命令或 VS Code 配置。

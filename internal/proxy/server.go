@@ -154,10 +154,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	bridgePrompt := buildToolBridgePrompt(req.Tools, req.Functions, choiceMode, choiceName, parallelTools)
 	bridgeActive := bridgePrompt != ""
 	if bridgeActive {
-		// Quick's native tool palette does not contain the caller's tools.
-		// Carry the RPC contract in the user turn, which every upstream surface
-		// accepts, rather than relying on an optional system-prompt override.
-		prompt += "\n\n" + bridgePrompt
+		// Keep tool transport instructions with the caller context. They must
+		// remain visible when the caller's system rules specify native tool use.
+		if systemPromptText != "" {
+			systemPromptText += "\n\n"
+		}
+		systemPromptText += bridgePrompt
 	}
 	bridgeAllowed := allowedTools
 	if choiceMode == "function" && choiceName != "" {

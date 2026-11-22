@@ -31,6 +31,28 @@ func TestAnthropicToolHistoryAndMediaConversion(t *testing.T) {
 	}
 }
 
+func TestAnthropicMidConversationSystemInstructions(t *testing.T) {
+	var input anthropicRequest
+	if err := json.Unmarshal([]byte(`{"model":"smart","system":"Initial rule","messages":[{"role":"user","content":"First task"},{"role":"assistant","content":"Done"},{"role":"system","content":[{"type":"text","text":"Updated project rule"}]},{"role":"system","content":[]},{"role":"user","content":"Next task"}]}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	chat, err := input.chatRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := systemPrompt(chat.Messages)
+	if !strings.Contains(instructions, "Initial rule") || !strings.Contains(instructions, "Updated project rule") || strings.Index(instructions, "Initial rule") > strings.Index(instructions, "Updated project rule") {
+		t.Fatal("system update ordering lost")
+	}
+	prompt, err := formatPrompt(chat.Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "Updated project rule") || !strings.Contains(prompt, "Next task") {
+		t.Fatal("system update was mixed into user history")
+	}
+}
+
 func anthropicEvents(t *testing.T, body string) []map[string]any {
 	t.Helper()
 	out := []map[string]any{}

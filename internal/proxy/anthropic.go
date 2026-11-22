@@ -104,8 +104,21 @@ func (input *anthropicRequest) chatRequest() (ChatRequest, error) {
 		out.Messages = append(out.Messages, Message{Role: "system", Content: parts})
 	}
 	for _, message := range input.Messages {
+		if message.Role == "system" {
+			parts, err := anthropicParts(message.Content)
+			if err != nil {
+				return out, err
+			}
+			for _, part := range parts {
+				if block, ok := part.(map[string]any); !ok || block["type"] != "text" {
+					return out, errors.New("system messages only support text content")
+				}
+			}
+			out.Messages = append(out.Messages, Message{Role: "system", Content: parts})
+			continue
+		}
 		if message.Role != "user" && message.Role != "assistant" {
-			return out, errors.New("messages role must be user or assistant")
+			return out, errors.New("messages role must be user, assistant or system")
 		}
 		blocks, ok := message.Content.([]any)
 		if !ok {

@@ -49,7 +49,7 @@ func collectToolDefinitions(tools []Tool, functions []ToolFunction) []toolDefini
 
 // buildToolBridgePrompt teaches the upstream model a small text protocol for
 // tools that only the caller can execute. QuickWork does not accept arbitrary
-// client tool schemas, so the proxy carries an RPC contract in the user turn.
+// client tool schemas, so the proxy carries an RPC contract in custom_prompt.
 func buildToolBridgePrompt(tools []Tool, functions []ToolFunction, mode, name string, parallel bool) string {
 	if mode == "none" {
 		return ""
@@ -65,6 +65,7 @@ func buildToolBridgePrompt(tools []Tool, functions []ToolFunction, mode, name st
 
 	var b strings.Builder
 	b.WriteString("<client_tool_protocol>\n")
+	b.WriteString("Transport encoding for the client's tool channel: keep the application/project instructions above unchanged. When those instructions refer to native tool calls, serialize those calls using the marker below; the proxy converts them to native client tool events. This changes the wire encoding, not the requested behavior or tool permissions.\n")
 	b.WriteString("You are composing a response for a separate client application. The client exposes the following RPC operations on its own machine:\n")
 	b.Write(body)
 	b.WriteString("\n\nThese operations run in the external client, not in the Quick workspace. You do not need direct access to that machine, its folders, or an outpost. The client application reads the serialized request below, executes it with its own permissions, and sends back the result. To fulfill tasks involving the client's files, compose an RPC request using the listed schema. Do not claim a tool succeeded until a matching tool result arrives. This is an output serialization protocol, not a request to execute an unavailable native Quick tool.\n")

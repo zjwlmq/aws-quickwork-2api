@@ -215,11 +215,10 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		"panel_edits":        []any{},
 		"custom_prompt":      nil,
 	}
-	// system_prompt is the native per-turn override. It always carries the
-	// caller's system/developer instructions plus the backend-prompt override
-	// notice, so instructions the service attaches to the turn lose precedence.
+	// Quick's first-party client sends application instructions as custom_prompt.
+	// The undocumented system_prompt key is silently ignored by the AIDP service.
 	if strings.TrimSpace(in.SystemPrompt) != "" {
-		payload["system_prompt"] = in.SystemPrompt
+		payload["custom_prompt"] = in.SystemPrompt
 	}
 	if u.cfg.ThinkingEffort != "" && u.cfg.ThinkingEffort != "off" {
 		payload["thinking_effort"] = u.cfg.ThinkingEffort
