@@ -183,30 +183,6 @@
               <span>需要处理</span><strong id="count-attention">0</strong>
             </div>
           </div>
-          <section
-            id="quota-panel"
-            class="quota-panel"
-            aria-labelledby="quota-title"
-          >
-            <div class="quota-heading">
-              <div>
-                <h2 id="quota-title">账号额度</h2>
-                <p>查看 Quick 账号的月度和会话剩余额度。</p>
-              </div>
-              <button
-                id="refresh-quotas"
-                class="button secondary"
-                type="button"
-              >
-                刷新额度
-              </button>
-            </div>
-            <p id="quota-updated" class="quota-updated" role="status">
-              正在读取额度…
-            </p>
-            <div id="quota-cards" class="quota-cards"></div>
-            <p id="quota-error" class="quota-error" role="alert" hidden></p>
-          </section>
           <section class="accounts-panel" aria-label="账号列表">
             <div class="table-toolbar">
               <div class="search-field">
@@ -227,14 +203,26 @@
                 <option value="error">异常</option>
                 <option value="disabled">已停用</option>
               </select>
+              <button
+                id="refresh-quotas"
+                class="button secondary"
+                type="button"
+              >
+                刷新额度
+              </button>
+              <span id="quota-updated" class="sr-only" role="status"
+                >正在读取额度…</span
+              >
             </div>
+            <p id="quota-error" class="quota-error" role="alert" hidden></p>
             <div class="table-scroll">
-              <table>
+              <table class="accounts-table">
                 <thead>
                   <tr>
                     <th>账号</th>
                     <th>登录方式</th>
                     <th>状态</th>
+                    <th>剩余额度</th>
                     <th>到期时间</th>
                     <th>调用次数</th>
                     <th>操作</th>

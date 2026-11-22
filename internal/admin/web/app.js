@@ -95,7 +95,6 @@
     state.quotaLoading = false;
     quotaLoadVersion++;
     clearTimeout(quotaPollTimer);
-    $("quota-cards").replaceChildren();
     $("quota-updated").textContent = "";
     errorAt("quota-error", "");
     state.connection = null;
@@ -210,7 +209,7 @@
             : a.provider === "enterprise"
               ? "企业 SSO"
               : a.provider;
-        return `<tr><td><div class="account-name"><span class="avatar" aria-hidden="true">${escape(name.slice(0, 1).toUpperCase())}</span><div><span class="account-email" title="${escape(name)}">${escape(name)}</span><span class="account-secondary">${escape(a.name || `账号 #${a.id}`)}</span></div></div></td><td>${escape(provider)}<span class="account-secondary">${escape(a.region)}</span></td><td><span class="status ${escape(a.status)}">${escape(statusLabels[a.status] || a.status)}</span>${a.last_error ? `<p class="account-error" title="${escape(a.last_error)}">${escape(a.last_error)}</p>` : ""}</td><td>${date(a.expires_at)}<span class="account-secondary">${a.expires_at && a.expires_at < Date.now() / 1000 ? "已过期" : "登录状态"}</span></td><td>${escape(a.use_count.toLocaleString("zh-CN"))}<span class="account-secondary">最近 ${date(a.last_used_at)}</span></td><td><div class="row-actions"><button class="row-action refresh" type="button" data-action="refresh" data-id="${a.id}" aria-label="刷新 ${escape(name)}">刷新</button><button class="row-action" type="button" data-action="toggle" data-id="${a.id}" aria-label="${a.disabled ? "启用" : "停用"} ${escape(name)}">${a.disabled ? "启用" : "停用"}</button><button class="row-action delete" type="button" data-action="delete" data-id="${a.id}" aria-label="删除 ${escape(name)}">删除</button></div></td></tr>`;
+        return `<tr><td><div class="account-name"><span class="avatar" aria-hidden="true">${escape(name.slice(0, 1).toUpperCase())}</span><div><span class="account-email" title="${escape(name)}">${escape(name)}</span><span class="account-secondary">${escape(a.name || `账号 #${a.id}`)}</span></div></div></td><td>${escape(provider)}<span class="account-secondary">${escape(a.region)}</span></td><td><span class="status ${escape(a.status)}">${escape(statusLabels[a.status] || a.status)}</span>${a.last_error ? `<p class="account-error" title="${escape(a.last_error)}">${escape(a.last_error)}</p>` : ""}</td><td class="account-quota" data-quota-account="${a.id}"></td><td>${date(a.expires_at)}<span class="account-secondary">${a.expires_at && a.expires_at < Date.now() / 1000 ? "已过期" : "登录状态"}</span></td><td>${escape(a.use_count.toLocaleString("zh-CN"))}<span class="account-secondary">最近 ${date(a.last_used_at)}</span></td><td><div class="row-actions"><button class="row-action refresh" type="button" data-action="refresh" data-id="${a.id}" aria-label="刷新 ${escape(name)}">刷新</button><button class="row-action" type="button" data-action="toggle" data-id="${a.id}" aria-label="${a.disabled ? "启用" : "停用"} ${escape(name)}">${a.disabled ? "启用" : "停用"}</button><button class="row-action delete" type="button" data-action="delete" data-id="${a.id}" aria-label="删除 ${escape(name)}">删除</button></div></td></tr>`;
       })
       .join("");
     const filtered = state.accounts.length > 0;
@@ -247,11 +246,10 @@
         return plan === "FREE" ? "Free" : plan[0] + plan.slice(1).toLowerCase();
     return "Quick 账号";
   }
-  function quotaWindowHTML(window, label, name) {
+  function quotaValueHTML(window, label) {
     const hasValue =
       typeof window?.remaining_percent === "number" &&
       Number.isFinite(window.remaining_percent);
-    const used = hasValue ? Math.min(100, Math.max(0, window.used_percent)) : 0;
     const severity =
       window?.warning?.severity === "error" ||
       (hasValue && window.remaining_percent === 0)
@@ -260,36 +258,42 @@
             (hasValue && window.remaining_percent <= 10)
           ? "warning"
           : "normal";
+    return `<span class="quota-value ${severity}"><span>${escape(label)}</span><strong>${hasValue ? escape(quotaPercent(window.remaining_percent)) : "—"}</strong></span>`;
+  }
+  function quotaWindowDetail(window, label) {
+    const used =
+      typeof window?.used_percent === "number"
+        ? `已用 ${quotaPercent(window.used_percent)}`
+        : "上游未提供可计算的额度";
     const reset = window?.resets_at
       ? `${date(window.resets_at)} 重置`
       : window?.resume_in_minutes > 0
         ? `约 ${window.resume_in_minutes} 分钟后恢复`
         : "";
-    return `<div class="quota-window ${severity}"><div class="quota-window-heading"><span>${escape(label)}剩余</span><strong>${hasValue ? escape(quotaPercent(window.remaining_percent)) : "—"}</strong></div><div class="quota-window-caption"><span>${hasValue ? "已用 " + escape(quotaPercent(window.used_percent)) : "上游暂未提供可计算的额度"}</span>${reset ? `<span>${escape(reset)}</span>` : ""}</div>${hasValue ? `<progress class="quota-track" max="100" value="${used}" aria-label="${escape(name + " " + label + "已使用")}"></progress>` : ""}${window?.warning?.description ? `<p class="quota-warning">${escape(window.warning.description)}</p>` : ""}</div>`;
+    return `<p>${escape(label)} · ${escape(used)}${reset ? `<br>${escape(reset)}` : ""}</p>${window?.warning?.description ? `<p class="quota-warning">${escape(window.warning.description)}</p>` : ""}`;
   }
   function renderQuotas() {
-    $("quota-panel").hidden = state.accounts.length === 0;
     const byID = new Map(state.quotas.map((item) => [item.account_id, item]));
-    $("quota-cards").innerHTML = filteredAccounts()
-      .map((account) => {
-        const item = byID.get(account.id);
-        const name = account.email || account.name || `账号 ${account.id}`;
-        const hasData =
-          item?.status === "available" || item?.status === "stale";
-        const trial = item?.subscription?.trial_expires_at;
-        const trialText = trial
-          ? `试用${trial <= Date.now() / 1000 ? "已到期" : "到期"} ${date(trial)}`
-          : "";
-        const note =
-          item?.status === "stale"
-            ? `显示上次数据 · ${item.error}`
-            : item?.error ||
-              (state.quotaLoading
-                ? "正在查询账号额度…"
-                : "尚未读取额度，请点击刷新额度");
-        return `<article class="quota-card${item?.status === "stale" ? " stale" : ""}" data-quota-account="${account.id}"><div class="quota-card-heading"><div><h3 title="${escape(name)}">${escape(name)}</h3><span class="quota-account-id">账号 ${account.id}${account.disabled ? " · 已停用" : ""}</span></div><span class="quota-plan">${escape(quotaPlan(item?.subscription))}</span></div>${hasData ? quotaWindowHTML(item.monthly, "月度额度", name) + quotaWindowHTML(item.session, "会话额度", name) + (item.overage_monthly ? quotaWindowHTML(item.overage_monthly, "额外额度", name) : "") : `<p class="quota-unavailable">${escape(note)}</p>`}${hasData && item.status === "stale" ? `<p class="quota-warning">${escape(note)}</p>` : ""}<div class="quota-card-footer"><span>${escape(trialText)}</span><span>${item?.updated_at ? "更新于 " + escape(date(item.updated_at)) : ""}</span></div></article>`;
-      })
-      .join("");
+    for (const cell of $("account-rows").querySelectorAll(
+      "[data-quota-account]",
+    )) {
+      const item = byID.get(Number(cell.dataset.quotaAccount));
+      const hasData = item?.status === "available" || item?.status === "stale";
+      const trial = item?.subscription?.trial_expires_at;
+      const trialText = trial
+        ? `试用${trial <= Date.now() / 1000 ? "已到期" : "到期"} ${date(trial)}`
+        : "";
+      const note =
+        item?.status === "stale"
+          ? `显示上次数据 · ${item.error}`
+          : item?.error ||
+            (state.quotaLoading
+              ? "正在查询账号额度…"
+              : "尚未读取额度，请点击刷新额度");
+      const opened = cell.querySelector("details")?.open;
+      cell.innerHTML = `<div class="quota-inline${item?.status === "stale" ? " stale" : ""}">${hasData ? `<div class="quota-values">${quotaValueHTML(item.monthly, "月度")}${quotaValueHTML(item.session, "会话")}</div>` : `<span class="quota-unavailable">${state.quotaLoading ? "查询中…" : item?.error ? "查询失败" : "尚未读取"}</span>`}<details class="quota-details"><summary>${item?.status === "stale" ? "上次数据" : hasData ? escape(quotaPlan(item.subscription)) : "额度"} · 详情</summary><div class="quota-meta">${hasData ? `<p>${escape(quotaPlan(item.subscription))}</p>${quotaWindowDetail(item.monthly, "月度")}${quotaWindowDetail(item.session, "会话")}${item.overage_monthly ? quotaWindowDetail(item.overage_monthly, "额外额度") : ""}` : ""}${trialText ? `<p>${escape(trialText)}</p>` : ""}${item?.updated_at ? `<p>更新于 ${escape(date(item.updated_at))}</p>` : ""}${!hasData || item.status === "stale" ? `<p class="quota-warning">${escape(note)}</p>` : ""}</div></details></div>`;
+      if (opened) cell.querySelector("details").open = true;
+    }
   }
   async function loadQuotas(force = false) {
     if (!state.session || state.page !== "accounts" || state.quotaLoading)
