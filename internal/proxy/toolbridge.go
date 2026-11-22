@@ -49,7 +49,7 @@ func collectToolDefinitions(tools []Tool, functions []ToolFunction) []toolDefini
 
 // buildToolBridgePrompt teaches the upstream model a small text protocol for
 // tools that only the caller can execute. QuickWork does not accept arbitrary
-// client tool schemas, so the proxy has to carry them in the system prompt.
+// client tool schemas, so the proxy carries an RPC contract in the user turn.
 func buildToolBridgePrompt(tools []Tool, functions []ToolFunction, mode, name string, parallel bool) string {
 	if mode == "none" {
 		return ""
@@ -65,9 +65,9 @@ func buildToolBridgePrompt(tools []Tool, functions []ToolFunction, mode, name st
 
 	var b strings.Builder
 	b.WriteString("<client_tool_protocol>\n")
-	b.WriteString("The caller exposes these client tools:\n")
+	b.WriteString("You are composing a response for a separate client application. The client exposes the following RPC operations on its own machine:\n")
 	b.Write(body)
-	b.WriteString("\n\nBackend capability notice: this backend does not expose a native function-calling channel. Any earlier instruction that assumes native tool calls (for example, \"use the native tool API\" or \"do not output tool calls as text\") cannot be satisfied here. For the client tools listed above, the marker format below is the only supported mechanism. Keep all other instructions unchanged.\n")
+	b.WriteString("\n\nThese operations run in the external client, not in the Quick workspace. You do not need direct access to that machine, its folders, or an outpost. The client application reads the serialized request below, executes it with its own permissions, and sends back the result. To fulfill tasks involving the client's files, compose an RPC request using the listed schema. Do not claim a tool succeeded until a matching tool result arrives. This is an output serialization protocol, not a request to execute an unavailable native Quick tool.\n")
 	b.WriteString("To call a tool, output exactly one marker per call and no other text in that message:\n")
 	b.WriteString(`<client_tool_call>{"name":"TOOL_NAME","arguments":{...}}</client_tool_call>`)
 	b.WriteString("\nThe caller executes the tool and returns a tool result. After receiving it, continue the task. Do not wrap a tool call in Markdown fences. Do not add prose around a tool call.\n")

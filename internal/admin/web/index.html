@@ -377,6 +377,30 @@
             <p class="privacy-note">
               在 OpenAI 兼容客户端中填写以上地址、API Key 和模型名。
             </p>
+            <h3>Claude Code 接入</h3>
+            <div class="connection-row">
+              <span class="field-label">Base URL</span
+              ><code id="anthropic-base">—</code>
+            </div>
+            <div class="connection-row">
+              <button
+                class="button small"
+                id="copy-claude-powershell"
+                type="button"
+              >
+                复制 PowerShell 命令</button
+              ><button
+                class="button small"
+                id="copy-claude-vscode"
+                type="button"
+              >
+                复制 VS Code 配置
+              </button>
+            </div>
+            <p class="privacy-note">
+              终端中执行命令后运行 claude；VS Code 配置合并到用户 settings.json
+              后重新打开 Claude Code。配置使用上方 API Key。
+            </p>
           </div>
         </section>
       </main>

@@ -398,6 +398,41 @@ curl https://your-domain.example/v1/videos \
 本次已实际验证文字几何动画与参考图片缩放视频，均由 Quick 的代码工具渲染；
 专用生成式视频模型尚未验证。接口是本项目的任务封装，并非完整的 OpenAI Videos SDK 实现。
 
+## Claude Code 接入（此部署扩展）
+
+同时提供 `POST /v1/messages` 与 `POST /v1/messages/count_tokens`，
+可使用 `Authorization: Bearer` 或 `x-api-key` 验证原有代理 API Key。
+支持普通回复、Anthropic SSE、客户端工具定义、`tool_use` 与 `tool_result`、
+图片和文档输入。工具在 Claude Code 本机执行，由原有工具桥接生成调用参数。
+
+Claude Code 的 Base URL 使用域名根地址，**不要添加 `/v1`**。
+管理员可在 `/admin/#connection` 直接复制带当前 Key 的 PowerShell 命令或 VS Code 配置。
+例如在 PowerShell 当前终端中运行：
+
+```powershell
+$env:ANTHROPIC_BASE_URL = 'https://your-domain.example'
+$env:ANTHROPIC_AUTH_TOKEN = 'YOUR_PROXY_API_KEY'
+$env:ANTHROPIC_MODEL = 'smart'
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL = 'smart'
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL = 'smart'
+$env:ANTHROPIC_DEFAULT_HAIKU_MODEL = 'fast'
+$env:DISABLE_PROMPT_CACHING = '1'
+$env:ENABLE_TOOL_SEARCH = 'false'
+$env:MAX_THINKING_TOKENS = '0'
+claude
+```
+
+命令只影响当前终端及其启动的程序。在 Claude Code 中执行 `/status` 检查地址和认证来源。
+VS Code 插件使用用户 `settings.json` 中的 `claudeCode.environmentVariables`，
+值为 `[{"name":"ANTHROPIC_BASE_URL","value":"https://your-domain.example"}, ...]`。
+复制按钮会提供完整的 JSON；合并现有配置，重开 Claude Code 会话后生效。
+
+这些模式名路由到当前 Quick 账号，不能据此认定实际使用了某个 Claude 官方型号。
+此兼容层不提供 Anthropic 的缓存、签名思考块、服务端工具或延迟工具搜索。
+`max_tokens`、采样参数和缓存控制不会传入 Quick；流式工具调用会缓冲至本轮结束。
+Token 计数使用本地估算，响应带 `X-Token-Count-Method: estimate`，不是 Claude tokenizer 的准确计数。
+语音、图片理解和长上下文能力仍取决于上游账号；该接口不代表完整 Anthropic API 实现。
+
 ## License
 
 本项目采用 [GNU General Public License v3.0](LICENSE) 授权。

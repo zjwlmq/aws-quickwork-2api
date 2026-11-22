@@ -197,6 +197,7 @@
     try {
       state.connection = await api("/connection");
       $("base-url").textContent = state.connection.base_url;
+      $("anthropic-base").textContent = state.connection.anthropic_base_url;
       $("model-list").replaceChildren(
         ...state.connection.models.map((model) => {
           const el = document.createElement("span");
@@ -567,6 +568,46 @@
   $("copy-key").addEventListener("click", () =>
     copy(state.connection?.api_keys[0], $("copy-key")),
   );
+  function claudeEnvironment() {
+    if (!state.connection) return null;
+    return {
+      ANTHROPIC_BASE_URL: state.connection.anthropic_base_url,
+      ANTHROPIC_AUTH_TOKEN: state.connection.api_keys[0] || "",
+      ANTHROPIC_MODEL: "smart",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "smart",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "smart",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "fast",
+      DISABLE_PROMPT_CACHING: "1",
+      ENABLE_TOOL_SEARCH: "false",
+      MAX_THINKING_TOKENS: "0",
+    };
+  }
+  $("copy-claude-powershell").addEventListener("click", () => {
+    const env = claudeEnvironment();
+    if (!env) return;
+    copy(
+      Object.entries(env)
+        .map(([name, value]) => `$env:${name} = '${value.replace(/'/g, "''")}'`)
+        .join("\n") + "\nclaude",
+      $("copy-claude-powershell"),
+    );
+  });
+  $("copy-claude-vscode").addEventListener("click", () => {
+    const env = claudeEnvironment();
+    if (!env) return;
+    copy(
+      JSON.stringify(
+        {
+          "claudeCode.environmentVariables": Object.entries(env).map(
+            ([name, value]) => ({ name, value }),
+          ),
+        },
+        null,
+        2,
+      ),
+      $("copy-claude-vscode"),
+    );
+  });
   $("reveal-key").addEventListener("click", () => {
     const showing = $("api-key").type === "password";
     $("api-key").type = showing ? "text" : "password";

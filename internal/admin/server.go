@@ -347,7 +347,7 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request, sess *ses
 }
 
 func (s *Server) connection(w http.ResponseWriter, r *http.Request, sess *session) {
-	reply(w, http.StatusOK, map[string]any{"base_url": s.cfg.Admin.PublicURL + "/v1", "models": s.cfg.Models, "api_keys": s.cfg.APIKeys})
+	reply(w, http.StatusOK, map[string]any{"base_url": s.cfg.Admin.PublicURL + "/v1", "anthropic_base_url": s.cfg.Admin.PublicURL, "models": s.cfg.Models, "api_keys": s.cfg.APIKeys})
 }
 
 func (s *Server) createFlow(w http.ResponseWriter, r *http.Request, sess *session) {

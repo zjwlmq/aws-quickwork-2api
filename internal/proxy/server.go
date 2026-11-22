@@ -59,6 +59,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/chat/completions", s.handleChat)
+	mux.HandleFunc("/v1/messages", s.handleAnthropic)
+	mux.HandleFunc("/v1/messages/count_tokens", s.handleAnthropic)
 	mux.HandleFunc("/v1/media/{id}", s.serveMedia)
 	mux.HandleFunc("/v1/videos", s.videoAPI)
 	mux.HandleFunc("/v1/videos/{id}", s.videoAPI)
@@ -69,7 +71,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Api-Key, X-Thread-Id")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Api-Key, X-Thread-Id, Anthropic-Version, Anthropic-Beta, Anthropic-Dangerous-Direct-Browser-Access")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -152,7 +154,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	bridgePrompt := buildToolBridgePrompt(req.Tools, req.Functions, choiceMode, choiceName, parallelTools)
 	bridgeActive := bridgePrompt != ""
 	if bridgeActive {
-		systemPromptText += "\n\n" + bridgePrompt
+		// Quick's native tool palette does not contain the caller's tools.
+		// Carry the RPC contract in the user turn, which every upstream surface
+		// accepts, rather than relying on an optional system-prompt override.
+		prompt += "\n\n" + bridgePrompt
 	}
 	bridgeAllowed := allowedTools
 	if choiceMode == "function" && choiceName != "" {
