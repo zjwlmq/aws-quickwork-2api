@@ -77,12 +77,19 @@
         </div>
         <h1>登录账号控制台</h1>
         <p>使用管理员账号管理 Amazon Quick 授权。</p>
-        <form id="login-form">
+        <form
+          id="login-form"
+          method="post"
+          action="/admin/api/login"
+          autocomplete="on"
+        >
           <label for="username">用户名</label>
           <input
             id="username"
             name="username"
             autocomplete="username"
+            autocapitalize="none"
+            spellcheck="false"
             value="admin"
             maxlength="128"
             required
@@ -96,6 +103,10 @@
             maxlength="1024"
             required
           />
+          <label class="remember-login" for="remember-login">
+            <input id="remember-login" name="remember_me" type="checkbox" />
+            <span>记住登录 30 天</span>
+          </label>
           <div id="login-error" class="form-error" role="alert" hidden></div>
           <button id="login-submit" class="button primary full" type="submit">
             登录

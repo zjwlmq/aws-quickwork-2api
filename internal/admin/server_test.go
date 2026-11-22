@@ -249,9 +249,12 @@ func TestLoginRateLimitAndExpiredSession(t *testing.T) {
 	f.s.attempts = make(map[string]loginAttempts)
 	f.s.mu.Unlock()
 	f.login(t)
-	f.s.mu.Lock()
-	f.s.sessions[sessionKey(f.cookie.Value)].Expires = time.Now().Add(-time.Second)
-	f.s.mu.Unlock()
+	if err := f.st.DeleteAdminSession(context.Background(), sessionKey(f.cookie.Value)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.SaveAdminSession(context.Background(), store.AdminSession{ID: sessionKey(f.cookie.Value), CSRF: f.csrf, ExpiresAt: time.Now().Add(-time.Second).Unix(), AuthVersion: f.s.authVersion()}, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
 	if w := f.request("GET", "/admin/api/session", "", true); w.Code != http.StatusUnauthorized {
 		t.Fatal("expired session accepted")
 	}

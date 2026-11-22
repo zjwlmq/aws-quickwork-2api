@@ -88,7 +88,7 @@
     }
     return result;
   }
-  function showLogin() {
+  function showLogin(clearPassword = true) {
     state.session = null;
     state.accounts = [];
     state.quotas = [];
@@ -130,7 +130,8 @@
     $("loading-screen").hidden = true;
     $("console").hidden = true;
     $("login-screen").hidden = false;
-    $("password").value = "";
+    if (clearPassword) $("password").value = "";
+    $("remember-login").checked = false;
     $("api-key").value = "";
     $("api-key").type = "password";
     if ($("add-dialog").open) $("add-dialog").close();
@@ -1100,24 +1101,27 @@
   }
   $("login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const submitButton = $("login-submit");
     errorAt("login-error", "");
-    busy($("login-submit"), true, "正在登录…");
+    busy(submitButton, true, "正在登录…");
     try {
-      const session = await api("/login", {
+      await api("/login", {
         method: "POST",
         body: {
           username: $("username").value.trim(),
           password: $("password").value,
+          remember_me: $("remember-login").checked,
         },
       });
-      $("password").value = "";
-      showConsole(session);
-      await Promise.all([loadAccounts(), loadConnection()]);
+      // Removing the submitted form signals success to browser password managers.
+      $("login-form").remove();
+      // The new document restores the console from its persistent HttpOnly cookie.
+      window.location.reload();
     } catch (error) {
       errorAt("login-error", error.message);
       $("password").focus();
     } finally {
-      busy($("login-submit"), false);
+      if (submitButton.isConnected) busy(submitButton, false);
     }
   });
   $("logout-button").addEventListener("click", async () => {
@@ -1329,7 +1333,7 @@
       showConsole(session);
       await Promise.all([loadAccounts(), loadConnection()]);
     } catch (error) {
-      showLogin();
+      showLogin(false);
       if (error.message && !error.message.includes("登录"))
         errorAt("login-error", "连接失败，请刷新页面重试");
     }

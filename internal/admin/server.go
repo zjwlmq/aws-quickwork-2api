@@ -37,7 +37,6 @@ type Server struct {
 	store      *store.Store
 	manager    *accounts.Manager
 	mu         sync.Mutex
-	sessions   map[string]*session
 	attempts   map[string]loginAttempts
 	flows      map[string]pendingLogin
 	loginSlots chan struct{}
@@ -63,9 +62,14 @@ func New(cfg *config.Config, st *store.Store, manager *accounts.Manager, media .
 		return nil, err
 	}
 	s := &Server{cfg: cfg, store: st, manager: manager,
-		sessions: make(map[string]*session), attempts: make(map[string]loginAttempts),
-		flows: make(map[string]pendingLogin), loginSlots: make(chan struct{}, 2),
+		attempts: make(map[string]loginAttempts),
+		flows:    make(map[string]pendingLogin), loginSlots: make(chan struct{}, 2),
 		quotas: make(map[int64]*quotaCache), quotaHTTP: newQuotaHTTP()}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := st.InitAdminSessions(ctx, s.authVersion(), time.Now().Unix()); err != nil {
+		return nil, fmt.Errorf("initialize administrator sessions: %w", err)
+	}
 	if len(media) > 0 {
 		s.media = media[0]
 	}
@@ -163,6 +167,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Remember bool   `json:"remember_me"`
 	}
 	if !readJSON(w, r, &input) {
 		return
@@ -200,22 +205,25 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "无法创建登录会话")
 		return
 	}
-	sess := &session{ID: sessionKey(token), CSRF: csrf, Expires: time.Now().Add(sessionLifetime)}
-	s.mu.Lock()
-	for key, old := range s.sessions {
-		if time.Now().After(old.Expires) {
-			delete(s.sessions, key)
-		}
+	lifetime := sessionLifetime
+	if input.Remember {
+		lifetime = rememberedSessionLifetime
 	}
-	if len(s.sessions) >= 64 {
-		s.mu.Unlock()
+	sess := &session{ID: sessionKey(token), CSRF: csrf, Expires: time.Now().Add(lifetime)}
+	err = s.store.SaveAdminSession(r.Context(), store.AdminSession{ID: sess.ID, CSRF: sess.CSRF, ExpiresAt: sess.Expires.Unix(), AuthVersion: s.authVersion()}, time.Now().Unix())
+	if errors.Is(err, store.ErrAdminSessionLimit) {
 		fail(w, http.StatusTooManyRequests, "登录会话过多，请稍后重试")
 		return
 	}
-	s.sessions[sess.ID] = sess
+	if err != nil {
+		diagnostics.Event(r.Context(), "error", "admin.session.save_failed", "error", err)
+		fail(w, http.StatusServiceUnavailable, "登录状态暂时无法保存，请稍后重试")
+		return
+	}
+	s.mu.Lock()
 	delete(s.attempts, ip)
 	s.mu.Unlock()
-	s.setCookie(w, token, int(sessionLifetime.Seconds()))
+	s.setCookie(w, token, int(lifetime.Seconds()))
 	diagnostics.Event(r.Context(), "info", "admin.login.succeeded", "peer_ip", ip)
 	s.sessionInfo(w, r, sess)
 }
@@ -225,8 +233,12 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request, sess *sessi
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request, sess *session) {
+	if err := s.store.DeleteAdminSession(r.Context(), sess.ID); err != nil {
+		diagnostics.Event(r.Context(), "error", "admin.session.revoke_failed", "error", err)
+		fail(w, http.StatusServiceUnavailable, "退出登录失败，请稍后重试")
+		return
+	}
 	s.mu.Lock()
-	delete(s.sessions, sess.ID)
 	for id, flow := range s.flows {
 		if flow.Owner == sess.ID {
 			delete(s.flows, id)

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"net"
@@ -16,6 +17,7 @@ import (
 
 const cookieName = "qw_admin_session"
 const sessionLifetime = 12 * time.Hour
+const rememberedSessionLifetime = 30 * 24 * time.Hour
 
 type session struct {
 	ID      string
@@ -80,11 +82,19 @@ func sessionKey(token string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
+func (s *Server) authVersion() string {
+	return sessionKey(s.cfg.Admin.Username + "\x00" + s.cfg.Admin.PasswordHash + "\x00" + s.cfg.Admin.PublicURL)
+}
+
 func (s *Server) setCookie(w http.ResponseWriter, value string, maxAge int) {
+	expires := time.Unix(1, 0)
+	if maxAge > 0 {
+		expires = time.Now().Add(time.Duration(maxAge) * time.Second)
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: value, Path: "/admin", HttpOnly: true,
 		Secure:   strings.HasPrefix(s.cfg.Admin.PublicURL, "https://"),
-		SameSite: http.SameSiteStrictMode, MaxAge: maxAge,
+		SameSite: http.SameSiteStrictMode, MaxAge: maxAge, Expires: expires,
 	})
 }
 
@@ -95,18 +105,18 @@ func (s *Server) requireSession(next func(http.ResponseWriter, *http.Request, *s
 			fail(w, http.StatusUnauthorized, "请先登录管理员账号")
 			return
 		}
-		s.mu.Lock()
 		key := sessionKey(cookie.Value)
-		sess := s.sessions[key]
-		if sess != nil && time.Now().After(sess.Expires) {
-			delete(s.sessions, key)
-			sess = nil
-		}
-		s.mu.Unlock()
-		if sess == nil {
+		saved, err := s.store.GetAdminSession(r.Context(), key, s.authVersion(), time.Now().Unix())
+		if errors.Is(err, sql.ErrNoRows) {
+			s.setCookie(w, "", -1)
 			fail(w, http.StatusUnauthorized, "登录已过期，请重新登录")
 			return
 		}
+		if err != nil {
+			fail(w, http.StatusServiceUnavailable, "登录状态暂时无法读取，请稍后重试")
+			return
+		}
+		sess := &session{ID: saved.ID, CSRF: saved.CSRF, Expires: time.Unix(saved.ExpiresAt, 0)}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			csrf := r.Header.Get("X-CSRF-Token")
 			if r.Header.Get("Origin") != s.cfg.Admin.PublicURL || subtle.ConstantTimeCompare([]byte(csrf), []byte(sess.CSRF)) != 1 {

@@ -1033,6 +1033,23 @@ tbody tr:hover {
 .login-card input {
   width: 100%;
 }
+.login-card .remember-login {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 17px 0 0;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.login-card .remember-login input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 .login-card .button {
   margin-top: 25px;
 }
