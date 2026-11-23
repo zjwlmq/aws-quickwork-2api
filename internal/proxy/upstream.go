@@ -523,7 +523,8 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
 			finishReason = "socket_read_error"
-			if expectedStreamEnd(ctx, err, sawMessageComplete, completeDeadline) {
+			expected := expectedStreamEnd(ctx, err, sawMessageComplete, completeDeadline)
+			if expected {
 				finishReason = "message_complete_grace_expired_or_closed"
 				diagnostics.Event(ctx, "info", "upstream.stream.closed", "finish_reason", finishReason, "read_wait_ms", readWait.Milliseconds())
 			} else {
@@ -533,7 +534,10 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 			if emitErr != nil {
 				return res, emitErr
 			}
-			if text.Len() > 0 || len(toolOrder) > 0 {
+			if ctx.Err() != nil {
+				return res, ctx.Err()
+			}
+			if expected {
 				return res, nil
 			}
 			return res, fmt.Errorf("upstream WebSocket read: %w", err)

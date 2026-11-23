@@ -102,7 +102,7 @@ func Default() Config {
 		APIKeys:             []string{},
 		Models:              []string{"smart", "fast", "balanced", "auto"},
 		DefaultModel:        "smart",
-		RequestTimeout:      Duration(5 * time.Minute),
+		RequestTimeout:      Duration(20 * time.Minute),
 		RefreshBefore:       Duration(10 * time.Minute),
 		MaxAttempts:         3,
 		AppVersion:          "1.2.4660",

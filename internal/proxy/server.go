@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,22 +17,24 @@ import (
 )
 
 type Server struct {
-	cfg                *config.Config
-	accounts           *accounts.Manager
-	tokens             *APIKeyAuth
-	upstream           *Upstream
-	store              *store.Store
-	mediaSecret        []byte
-	videoSlots         chan struct{}
-	chatCleanupRunning atomic.Bool
+	cfg                     *config.Config
+	accounts                *accounts.Manager
+	tokens                  *APIKeyAuth
+	upstream                *Upstream
+	store                   *store.Store
+	mediaSecret             []byte
+	videoSlots              chan struct{}
+	chatCleanupRunning      atomic.Bool
+	streamKeepAliveInterval time.Duration
 }
 
 func NewServer(cfg *config.Config, mgr *accounts.Manager, stores ...*store.Store) *Server {
 	s := &Server{
-		cfg:      cfg,
-		accounts: mgr,
-		tokens:   NewAPIKeyAuth(cfg.APIKeys),
-		upstream: NewUpstream(cfg),
+		cfg:                     cfg,
+		accounts:                mgr,
+		tokens:                  NewAPIKeyAuth(cfg.APIKeys),
+		upstream:                NewUpstream(cfg),
+		streamKeepAliveInterval: 15 * time.Second,
 	}
 	if len(stores) > 0 {
 		s.store = stores[0]
@@ -235,6 +238,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if lastErr != nil {
+			lastErr = s.chatFailure(ctx, lastErr)
 			status, code := chatErrorStatus(lastErr)
 			writeOpenAIError(w, status, code, lastErr.Error())
 			return
@@ -434,7 +438,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			lastErr = err
 			continue
 		}
-		res, err = s.upstream.Chat(attemptCtx, sess, in, func(ev StreamEvent) error {
+		res, err = streamWithKeepAlive(attemptCtx, s.streamKeepAliveInterval, func(callCtx context.Context, emit EventFunc) (ChatResult, error) {
+			return s.upstream.Chat(callCtx, sess, in, emit)
+		}, func(ev StreamEvent) error {
 			switch ev.Type {
 			case "text":
 				if ev.Text == "" {
@@ -454,6 +460,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 					emitTool(*ev.ToolCall)
 				}
 			}
+			return nil
+		}, func() error {
+			ensureStarted()
+			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				return err
+			}
+			flusher.Flush()
+			diagnostics.Event(ctx, "debug", "chat.response.keepalive")
 			return nil
 		})
 		if err == nil {
@@ -479,6 +493,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		sentArgs = make(map[string]string)
 	}
 	if lastErr != nil {
+		lastErr = s.chatFailure(ctx, lastErr)
 		if started {
 			mediaText.push("", true, func(link string) string { return replaceNativeLinks(link, nil) })
 		}
@@ -575,6 +590,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
+}
+
+func (s *Server) chatFailure(ctx context.Context, err error) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		err = fmt.Errorf("Quick 请求超过 %s 的总超时限制，回复未完成: %w", s.cfg.RequestTimeout, context.DeadlineExceeded)
+		diagnostics.Event(ctx, "error", "chat.request.timed_out", "timeout_ms", s.cfg.RequestTimeout.Duration().Milliseconds(), "error", err)
+	}
+	return err
 }
 
 func (s *Server) maxAttempts(ctx context.Context) int {

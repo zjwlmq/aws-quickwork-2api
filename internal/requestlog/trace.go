@@ -37,6 +37,7 @@ type trace struct {
 	httpDone       bool
 	completed      bool
 	streamError    bool
+	timedOut       bool
 	transientError bool
 	background     bool
 	backgroundDone bool
@@ -51,7 +52,7 @@ func (t *trace) Observe(_ context.Context, level, event string, f map[string]any
 	}
 	if len(t.events) < 200 && (level == "error" || level == "warn" || event == "chat.client_tool.emitted" || event == "account.selected" || strings.HasPrefix(event, "video.job.")) {
 		entry := map[string]any{"time": time.Now().UTC().Format(time.RFC3339Nano), "level": level, "event": event}
-		for _, key := range []string{"account_id", "attempt", "tool_id", "tool_name", "arguments_bytes", "job_id", "status", "duration_ms", "error", "error_message"} {
+		for _, key := range []string{"account_id", "attempt", "tool_id", "tool_name", "arguments_bytes", "job_id", "status", "duration_ms", "timeout_ms", "error", "error_message"} {
 			if value, ok := f[key]; ok {
 				if e, ok := value.(error); ok {
 					value = e.Error()
@@ -108,6 +109,10 @@ func (t *trace) Observe(_ context.Context, level, event string, f map[string]any
 	case "chat.response.stream_error":
 		t.streamError = true
 		t.lastError = cleanText(f["error_message"])
+	case "chat.request.timed_out":
+		t.timedOut = true
+		t.streamError = true
+		t.lastError = cleanText(f["error"])
 	case "upstream.tool.error":
 		t.transientError = true
 		t.lastError = cleanText(f["error_message"])
@@ -261,7 +266,7 @@ func (t *trace) end(r *http.Request, w *writer, requestBody *capture, panicked b
 				t.lastError = "客户端连接已关闭"
 			}
 		}
-		if (w.status >= 400 || t.streamError || panicked) && t.record.Status != "cancelled" {
+		if t.timedOut || ((w.status >= 400 || t.streamError || panicked) && t.record.Status != "cancelled") {
 			t.record.Status = "error"
 		}
 		if panicked && t.lastError == "" {

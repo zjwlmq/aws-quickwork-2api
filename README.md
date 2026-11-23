@@ -134,7 +134,7 @@ for chunk in client.chat.completions.create(
   "api_keys": [],
   "models": ["smart", "fast", "balanced", "auto"],
   "default_model": "smart",
-  "request_timeout": "5m",
+  "request_timeout": "20m",
   "refresh_before": "10m",
   "max_attempts": 3,
   "app_version": "1.2.4660",
@@ -162,7 +162,7 @@ for chunk in client.chat.completions.create(
 | `api_keys` | `[]` | 允许的本地 API key；为空时关闭鉴权 |
 | `models` | `smart,fast,balanced,auto` | `/v1/models` 返回值与 model 白名单 |
 | `default_model` | `smart` | 未知 model 的映射 |
-| `request_timeout` | `5m` | 单次上游请求超时 |
+| `request_timeout` | `20m` | 单次请求的总超时，包含原生工具处理和生成时间 |
 | `refresh_before` | `10m` | token 距离到期小于该值时自动 refresh |
 | `max_attempts` | `3` | 单次请求最多尝试的账号数 |
 | `app_version` | `1.2.4660` | 上游握手使用的 appVersion |
@@ -257,6 +257,7 @@ sequenceDiagram
 - `quickproxy serve` 从 SQLite 读取 `jwt`、`ws_host` 和 `provider`，连接上游 WebSocket。
 - 上游不是 OpenAI HTTP API，而是 WebSocket JSON 帧；`internal/proxy/wire.go` 负责帧编码与 event-stream 解码。
 - 长连接每 25 秒通过同一原生编码器发送带时间戳的应用层 `ping`，同时保留 WebSocket 控制 Ping。仅发送控制帧不能重置上游“95 秒未收到客户端数据帧”的空闲检测。整个请求仍受 `request_timeout` 限制。
+- 流式请求等待原生工具或生成长回复时，每 15 秒向客户端发送 SSE 保活（Anthropic 为 `ping`）。总超时返回 `upstream_timeout`；未完成的上游回复不会被当作成功或提交为可续接历史。
 
 ### 提示词与工具调用
 

@@ -299,7 +299,11 @@ func (s *Server) handleAnthropic(w http.ResponseWriter, r *http.Request) {
 		defer func() { close(stopPing); <-pingDone }()
 		go func() {
 			defer close(pingDone)
-			ticker := time.NewTicker(15 * time.Second)
+			interval := s.streamKeepAliveInterval
+			if interval <= 0 {
+				interval = 15 * time.Second
+			}
+			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 			for {
 				select {

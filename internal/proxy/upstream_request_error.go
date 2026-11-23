@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -39,6 +40,9 @@ func requestRefused(err error) bool {
 }
 
 func chatErrorStatus(err error) (int, string) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout, "upstream_timeout"
+	}
 	var refusal *upstreamRequestError
 	if errors.As(err, &refusal) {
 		return http.StatusBadRequest, refusal.code
