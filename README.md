@@ -509,6 +509,9 @@ tail -f /opt/aws-quickwork-2api/data/logs/quickwork.jsonl
 覆盖 `/v1/messages`、`/v1/chat/completions`、`/v1/videos` 和后台提交视频的请求。
 视频任务在后台完成或失败后更新同一条记录。HTTP 200 的 SSE 错误会标为失败；
 账号重试或原生工具出错后最终成功的调用会标为“出错后成功”。
+OpenAI 的 `finish_reason` + `[DONE]` 或 Anthropic 的停止原因 + `message_stop` 完整写出后，
+客户端正常关闭连接仍记为成功；完成前断开或响应写入失败才记为取消。
+流式完成状态独立于 512 KiB 正文捕获上限，长工具结果不会使结束标记丢失。
 进程重启前仍在处理的记录会标为“已中断”，避免伪装成成功。
 
 概要保存在 SQLite，保留最近 2,000 条。成功正文只在最多 32 MiB 的内存缓存中保留至多 1 小时，

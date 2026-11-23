@@ -217,6 +217,9 @@ func (t *trace) end(r *http.Request, w *writer, requestBody *capture, panicked b
 		requestContent["body_note"] = "处理器未完整读取请求正文，详情只包含已读取的数据"
 	}
 	t.response = map[string]any{"headers": safeHeaders(w.Header()), "http_status": w.status, "content": w.body.snapshot(w.Header().Get("Content-Type"))}
+	if strings.HasPrefix(strings.ToLower(w.Header().Get("Content-Type")), "text/event-stream") {
+		t.response["completion"] = map[string]any{"protocol_complete": w.completion.finished, "completed_while_connected": w.completion.finishedWhileActive, "stream_error_seen": w.completion.failed}
+	}
 	if message, failed := responseError(w.body.prefix.Bytes(), w.Header().Get("Content-Type")); failed {
 		t.streamError = true
 		if message != "" {
@@ -242,7 +245,17 @@ func (t *trace) end(r *http.Request, w *writer, requestBody *capture, panicked b
 	}
 	if !t.backgroundDone {
 		t.record.Status = "success"
-		if r.Context().Err() != nil || w.writeError != nil {
+		responseComplete := w.completion.complete() && w.status < 400 && !t.streamError && !panicked
+		if responseComplete {
+			t.completed = true
+			if t.record.FinishReason == "" {
+				t.record.FinishReason = w.completion.finishReason
+			}
+			if r.Context().Err() != nil && len(t.events) < 200 {
+				t.events = append(t.events, map[string]any{"time": time.Now().UTC().Format(time.RFC3339Nano), "level": "info", "event": "http.client.closed_after_completion"})
+			}
+		}
+		if (r.Context().Err() != nil && !responseComplete) || w.writeError != nil {
 			t.record.Status = "cancelled"
 			if t.lastError == "" {
 				t.lastError = "客户端连接已关闭"

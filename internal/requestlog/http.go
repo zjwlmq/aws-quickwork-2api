@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"quickwork-openai/internal/diagnostics"
@@ -17,6 +18,8 @@ type writer struct {
 	started     time.Time
 	body        capture
 	writeError  error
+	ctx         context.Context
+	completion  streamCompletion
 }
 
 func (w *writer) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -36,10 +39,18 @@ func (w *writer) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(200)
 	}
+	// Observe cancellation before the write: a client may read [DONE] and close
+	// while Write returns. That is different from writing after it already left.
+	active := w.ctx == nil || w.ctx.Err() == nil
 	n, err := w.ResponseWriter.Write(b)
 	_, _ = w.body.Write(b[:n])
 	if err != nil {
 		w.writeError = err
+	} else if n != len(b) {
+		w.writeError = io.ErrShortWrite
+	}
+	if strings.HasPrefix(strings.ToLower(w.Header().Get("Content-Type")), "text/event-stream") {
+		w.completion.write(b[:n], active && err == nil && n == len(b))
 	}
 	return n, err
 }
@@ -98,7 +109,7 @@ func (r *Recorder) Middleware(next http.Handler) http.Handler {
 		if req.Body != nil {
 			req.Body = &readCloser{Reader: io.TeeReader(req.Body, input), Closer: req.Body}
 		}
-		captureWriter := &writer{ResponseWriter: w, started: started, firstByteMS: -1}
+		captureWriter := &writer{ResponseWriter: w, started: started, firstByteMS: -1, ctx: req.Context(), completion: streamCompletion{protocol: kind}}
 		var wrapped http.ResponseWriter = captureWriter
 		if _, ok := w.(http.Flusher); ok {
 			wrapped = &flushingWriter{captureWriter}
