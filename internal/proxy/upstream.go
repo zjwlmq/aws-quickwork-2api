@@ -25,11 +25,12 @@ const (
 )
 
 type Upstream struct {
-	cfg *config.Config
+	cfg               *config.Config
+	heartbeatInterval time.Duration
 }
 
 func NewUpstream(cfg *config.Config) *Upstream {
-	return &Upstream{cfg: cfg}
+	return &Upstream{cfg: cfg, heartbeatInterval: 25 * time.Second}
 }
 
 // ChatInput is one upstream turn.
@@ -191,11 +192,17 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		return err
 	}
 
-	// Keep the socket alive while the agent is thinking.
+	// The native service has an application-data idle watchdog. WebSocket
+	// control Ping alone does not reset it; the official client also sends this
+	// timestamped JSON ping through the normal AIDP/Gateway frame encoder.
 	stopPing := make(chan struct{})
 	defer close(stopPing)
 	go func() {
-		ticker := time.NewTicker(25 * time.Second)
+		interval := u.heartbeatInterval
+		if interval <= 0 {
+			interval = 25 * time.Second
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -204,6 +211,11 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if heartbeatErr := send(map[string]any{"type": "ping", "payload": map[string]any{"timestamp": time.Now().UnixMilli()}}); heartbeatErr != nil {
+					diagnostics.Event(ctx, "warn", "upstream.heartbeat.failed", "heartbeat_type", "application", "error", heartbeatErr)
+					_ = conn.Close()
+					return
+				}
 				writeMu.Lock()
 				pingErr := conn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second))
 				writeMu.Unlock()

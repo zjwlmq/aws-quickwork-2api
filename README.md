@@ -256,6 +256,7 @@ sequenceDiagram
 - 登录完全在 `quickproxy login` 内完成，不依赖官方桌面应用或 outpost。
 - `quickproxy serve` 从 SQLite 读取 `jwt`、`ws_host` 和 `provider`，连接上游 WebSocket。
 - 上游不是 OpenAI HTTP API，而是 WebSocket JSON 帧；`internal/proxy/wire.go` 负责帧编码与 event-stream 解码。
+- 长连接每 25 秒通过同一原生编码器发送带时间戳的应用层 `ping`，同时保留 WebSocket 控制 Ping。仅发送控制帧不能重置上游“95 秒未收到客户端数据帧”的空闲检测。整个请求仍受 `request_timeout` 限制。
 
 ### 提示词与工具调用
 
