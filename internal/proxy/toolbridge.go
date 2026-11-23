@@ -72,6 +72,7 @@ func buildToolBridgePrompt(tools []Tool, functions []ToolFunction, mode, name st
 	b.WriteString("To call a tool, output exactly one marker per call and no other text in that message:\n")
 	b.WriteString(`<client_tool_call>{"name":"TOOL_NAME","arguments":{...}}</client_tool_call>`)
 	b.WriteString("\nThe caller executes the tool and returns a tool result. After receiving it, continue the task. Do not wrap a tool call in Markdown fences. Do not add prose around a tool call.\n")
+	b.WriteString("For client project/file operations, use these client RPC operations. Native Quick Python/filesystem tools can read transported context attachments, but their workspace is separate from the client's project. Do not create the client's deliverable in that workspace as a substitute for a client Write/Patch call. Put the complete requested content in the client tool arguments; a native Python variable or a placeholder such as __SVG__ cannot transfer that content to the client. Follow an explicit request for literal placeholder text when that is the actual requested file content. The marker must contain a JSON object, not a JSON-escaped representation of one.\n")
 	if mode == "function" && name != "" {
 		fmt.Fprintf(&b, "You must call the tool %q.\n", name)
 	}
@@ -89,6 +90,15 @@ func parseToolEnvelopes(payload string) []toolCallEnvelope {
 	payload = strings.TrimSpace(payload)
 	if payload == "" {
 		return nil
+	}
+	// Some native replies quote the complete JSON object or escape it once
+	// inside the marker. Only unwrap a complete, valid JSON value; never try
+	// to complete truncated tool arguments.
+	var decoded string
+	if json.Unmarshal([]byte(payload), &decoded) == nil && json.Valid([]byte(decoded)) {
+		payload = decoded
+	} else if !json.Valid([]byte(payload)) && json.Unmarshal([]byte(`"`+payload+`"`), &decoded) == nil && json.Valid([]byte(decoded)) {
+		payload = decoded
 	}
 	var arr []toolCallEnvelope
 	if strings.HasPrefix(payload, "[") && json.Unmarshal([]byte(payload), &arr) == nil {

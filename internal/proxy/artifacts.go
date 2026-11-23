@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"html"
@@ -31,6 +32,23 @@ type NativeArtifact struct {
 	Title string
 }
 type ArtifactHandler func(context.Context, string, []NativeArtifact) ([]store.MediaFile, error)
+
+// file_read_image emits internal inspection thumbnails. In client tool mode
+// they are observations used by Quick, not files requested by the API caller.
+func chatArtifacts(ctx context.Context, refs []NativeArtifact, clientTools bool) []NativeArtifact {
+	if !clientTools {
+		return refs
+	}
+	out := make([]NativeArtifact, 0, len(refs))
+	for _, ref := range refs {
+		if strings.HasPrefix(ref.Path, "workspace/artifacts/.metadata/_images/") {
+			diagnostics.Event(ctx, "info", "media.preview.skipped", "native_path_sha256", diagnostics.Fingerprint(ref.Path), "reason", "internal_tool_inspection")
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out
+}
 
 var nativeLinks = regexp.MustCompile(`qw-file://([^\s\x60"'<>\)\]]+)`)
 var nativeTags = regexp.MustCompile(`<artifact\b[^>]*>`)
@@ -203,6 +221,61 @@ func (s *Server) mediaURL(f *store.MediaFile) string {
 	return strings.TrimRight(s.cfg.Admin.PublicURL, "/") + "/v1/media/" + url.PathEscape(f.ID) + "?expires=" + strconv.FormatInt(expires, 10) + "&signature=" + sig
 }
 
+func (s *Server) downloadArtifact(ctx context.Context, sess *Session, thread, nativePath string) (*http.Response, error) {
+	delay := s.artifactRetryDelay
+	if delay <= 0 {
+		delay = time.Second
+	}
+	for attempt := 1; attempt <= 4; attempt++ {
+		// Reissue the presigned URL on every attempt. Both an expired signature
+		// and a workspace artifact still being published can initially return 403.
+		link, err := nativeDownloadURL(ctx, sess, thread, nativePath)
+		if err != nil {
+			return nil, err
+		}
+		r, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
+		if err != nil {
+			return nil, err
+		}
+		res, err := mediaHTTPClient.Do(r)
+		if err != nil {
+			diagnostics.Event(ctx, "error", "media.download.failed", "download_attempt", attempt, "error", err)
+			return nil, errors.New("Quick 生成文件下载失败")
+		}
+		if res.StatusCode == http.StatusOK {
+			return res, nil
+		}
+		var upstream struct {
+			Code    string `xml:"Code"`
+			Message string `xml:"Message"`
+		}
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 8<<10))
+		res.Body.Close()
+		_ = xml.Unmarshal(raw, &upstream)
+		err = fmt.Errorf("生成文件下载返回 HTTP %d", res.StatusCode)
+		if upstream.Code != "" {
+			err = fmt.Errorf("%w (%s)", err, diagnostics.RedactText(upstream.Code, 128))
+		}
+		retry := attempt < 4 && (res.StatusCode == http.StatusForbidden || res.StatusCode == http.StatusNotFound)
+		event := "media.download.rejected"
+		if retry {
+			event = "media.download.retry"
+		}
+		diagnostics.Event(ctx, "warn", event, "download_attempt", attempt, "http_status", res.StatusCode, "upstream_code", upstream.Code, "error_message", upstream.Message, "upstream_request_id", res.Header.Get("X-Amz-Request-Id"), "error", err)
+		if !retry {
+			return nil, err
+		}
+		timer := time.NewTimer(delay << (attempt - 1))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, errors.New("生成文件下载重试次数已耗尽")
+}
+
 func (s *Server) cacheArtifacts(ctx context.Context, sess *Session, owner, thread string, refs []NativeArtifact) (cached []store.MediaFile, resultErr error) {
 	ctx = diagnostics.With(ctx, "account_id", sess.AccountID, "upstream_thread_id", thread)
 	started := time.Now()
@@ -238,24 +311,11 @@ func (s *Server) cacheArtifacts(ctx context.Context, sess *Session, owner, threa
 		}
 		stage = "download_url"
 		diagnostics.Event(ctx, "info", "media.cache.started", "native_path_sha256", diagnostics.Fingerprint(ref.Path), "artifact_kind", ref.Kind)
-		link, err := nativeDownloadURL(ctx, sess, thread, ref.Path)
-		if err != nil {
-			return nil, err
-		}
-		r, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
-		if err != nil {
-			return nil, err
-		}
 		stage = "download"
 		downloadStarted := time.Now()
-		res, err := mediaHTTPClient.Do(r)
+		res, err := s.downloadArtifact(ctx, sess, thread, ref.Path)
 		if err != nil {
-			diagnostics.Event(ctx, "error", "media.download.failed", "error", err)
-			return nil, errors.New("Quick 生成文件下载失败")
-		}
-		if res.StatusCode != http.StatusOK {
-			res.Body.Close()
-			return nil, fmt.Errorf("生成文件下载返回 HTTP %d", res.StatusCode)
+			return nil, err
 		}
 		diagnostics.Event(ctx, "debug", "media.download.response", "http_status", res.StatusCode, "content_length", res.ContentLength, "content_type", res.Header.Get("Content-Type"))
 		if res.ContentLength > 256<<20 {

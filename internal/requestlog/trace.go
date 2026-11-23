@@ -37,6 +37,7 @@ type trace struct {
 	httpDone       bool
 	completed      bool
 	streamError    bool
+	serverError    bool
 	timedOut       bool
 	transientError bool
 	background     bool
@@ -44,15 +45,15 @@ type trace struct {
 	lastError      string
 }
 
-func (t *trace) Observe(_ context.Context, level, event string, f map[string]any) {
+func (t *trace) Observe(ctx context.Context, level, event string, f map[string]any) {
 	t.mu.Lock()
 	index := int(number(f["attempt"]))
 	if index > t.record.AttemptCount {
 		t.record.AttemptCount = index
 	}
-	if len(t.events) < 200 && (level == "error" || level == "warn" || event == "chat.client_tool.emitted" || event == "account.selected" || strings.HasPrefix(event, "video.job.")) {
+	if len(t.events) < 200 && (level == "error" || level == "warn" || event == "chat.client_tool.emitted" || event == "account.selected" || event == "media.preview.skipped" || strings.HasPrefix(event, "video.job.")) {
 		entry := map[string]any{"time": time.Now().UTC().Format(time.RFC3339Nano), "level": level, "event": event}
-		for _, key := range []string{"account_id", "attempt", "tool_id", "tool_name", "arguments_bytes", "job_id", "status", "duration_ms", "timeout_ms", "error", "error_message"} {
+		for _, key := range []string{"account_id", "attempt", "tool_id", "tool_name", "arguments_bytes", "job_id", "status", "duration_ms", "timeout_ms", "download_attempt", "http_status", "upstream_code", "native_path_sha256", "reason", "error", "error_message"} {
 			if value, ok := f[key]; ok {
 				if e, ok := value.(error); ok {
 					value = e.Error()
@@ -108,6 +109,7 @@ func (t *trace) Observe(_ context.Context, level, event string, f map[string]any
 		t.record.FinishReason = cleanText(f["finish_reason"])
 	case "chat.response.stream_error":
 		t.streamError = true
+		t.serverError = t.serverError || ctx.Err() == nil
 		t.lastError = cleanText(f["error_message"])
 	case "chat.request.timed_out":
 		t.timedOut = true
@@ -116,6 +118,9 @@ func (t *trace) Observe(_ context.Context, level, event string, f map[string]any
 	case "upstream.tool.error":
 		t.transientError = true
 		t.lastError = cleanText(f["error_message"])
+	case "media.download.retry":
+		t.transientError = true
+		t.lastError = cleanText(f["error"])
 	case "upstream.tool.result":
 		if status := textValue(f["tool_status"]); status == "error" || status == "failed" {
 			t.transientError = true
@@ -266,7 +271,7 @@ func (t *trace) end(r *http.Request, w *writer, requestBody *capture, panicked b
 				t.lastError = "客户端连接已关闭"
 			}
 		}
-		if t.timedOut || ((w.status >= 400 || t.streamError || panicked) && t.record.Status != "cancelled") {
+		if t.timedOut || t.serverError || ((w.status >= 400 || t.streamError || panicked) && t.record.Status != "cancelled") {
 			t.record.Status = "error"
 		}
 		if panicked && t.lastError == "" {

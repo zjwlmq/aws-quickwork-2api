@@ -26,6 +26,7 @@ type Server struct {
 	videoSlots              chan struct{}
 	chatCleanupRunning      atomic.Bool
 	streamKeepAliveInterval time.Duration
+	artifactRetryDelay      time.Duration
 }
 
 func NewServer(cfg *config.Config, mgr *accounts.Manager, stores ...*store.Store) *Server {
@@ -35,6 +36,7 @@ func NewServer(cfg *config.Config, mgr *accounts.Manager, stores ...*store.Store
 		tokens:                  NewAPIKeyAuth(cfg.APIKeys),
 		upstream:                NewUpstream(cfg),
 		streamKeepAliveInterval: 15 * time.Second,
+		artifactRetryDelay:      time.Second,
 	}
 	if len(stores) > 0 {
 		s.store = stores[0]
@@ -216,7 +218,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			turn.bind(&in, w)
 			owner := ownerKey(tokenFromRequest(r))
 			in.ArtifactHandler = func(ctx context.Context, thread string, refs []NativeArtifact) ([]store.MediaFile, error) {
-				return s.cacheArtifacts(ctx, sess, owner, thread, refs)
+				return s.cacheArtifacts(ctx, sess, owner, thread, chatArtifacts(ctx, refs, bridgeActive))
 			}
 			if err := sess.validate(); err != nil {
 				s.accounts.ReportFailure(attemptCtx, acct.ID, err)
@@ -431,7 +433,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		turn.bind(&in, w)
 		owner := ownerKey(tokenFromRequest(r))
 		in.ArtifactHandler = func(ctx context.Context, thread string, refs []NativeArtifact) ([]store.MediaFile, error) {
-			return s.cacheArtifacts(ctx, sess, owner, thread, refs)
+			return s.cacheArtifacts(ctx, sess, owner, thread, chatArtifacts(ctx, refs, bridgeActive))
 		}
 		if err := sess.validate(); err != nil {
 			s.accounts.ReportFailure(attemptCtx, acct.ID, err)

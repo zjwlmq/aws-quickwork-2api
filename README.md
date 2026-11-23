@@ -258,6 +258,7 @@ sequenceDiagram
 - 上游不是 OpenAI HTTP API，而是 WebSocket JSON 帧；`internal/proxy/wire.go` 负责帧编码与 event-stream 解码。
 - 长连接每 25 秒通过同一原生编码器发送带时间戳的应用层 `ping`，同时保留 WebSocket 控制 Ping。仅发送控制帧不能重置上游“95 秒未收到客户端数据帧”的空闲检测。整个请求仍受 `request_timeout` 限制。
 - 流式请求等待原生工具或生成长回复时，每 15 秒向客户端发送 SSE 保活（Anthropic 为 `ping`）。总超时返回 `upstream_timeout`；未完成的上游回复不会被当作成功或提交为可续接历史。
+- 文件下载遇到 403/404 时，会重新获取签名地址并有限重试；持续失败仍明确报错。客户端工具模式会忽略 Quick `file_read_image` 的内部检查缩略图，避免它阻塞真正的客户端工具调用。上游先报错、客户端随后关闭连接时，请求日志保留上游失败原因。
 
 ### 提示词与工具调用
 
