@@ -357,11 +357,39 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			"code":    code,
 		}})
 	}
-	mediaText := mediaStream{emit: func(text string) { writeChunk(map[string]any{"content": text}, nil) }}
-
 	sawText := false
 	sawTool := false
-	var bridgeBuffer strings.Builder
+	textBytes := 0
+	mediaText := mediaStream{emit: func(text string) {
+		writeChunk(map[string]any{"content": text}, nil)
+		if !sawText && strings.TrimSpace(text) != "" {
+			sawText = true
+			diagnostics.Event(ctx, "debug", "chat.response.first_content", "text_bytes", len(text), "tool_bridge", bridgeActive)
+		}
+		textBytes += len(text)
+	}}
+	finishStream := func() {
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}
+	failStream := func(err error) {
+		status, code := chatErrorStatus(err)
+		if !started {
+			writeOpenAIError(w, status, code, err.Error())
+			return
+		}
+		mediaText.push("", true, func(link string) string { return replaceNativeLinks(link, nil) })
+		writeStreamError(err.Error(), code)
+		finishStream()
+	}
+	newBridge := func() clientToolStream {
+		return clientToolStream{
+			allowed:   bridgeAllowed,
+			checkBare: true,
+			emitText:  func(text string) { mediaText.push(text, false, nil) },
+		}
+	}
+	bridge := newBridge()
 	toolIndex := 0
 	toolIndexes := make(map[string]int)
 	sentArgs := make(map[string]string)
@@ -449,11 +477,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 					return nil
 				}
 				if bridgeActive {
-					bridgeBuffer.WriteString(ev.Text)
-					return nil
+					bridge.push(ev.Text)
+				} else {
+					mediaText.push(ev.Text, false, nil)
 				}
-				sawText = true
-				mediaText.push(ev.Text, false, nil)
 			case "tool_call", "tool_call_update":
 				if bridgeActive {
 					return nil
@@ -488,97 +515,51 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// the next account in rotation.
 		sawText = false
 		sawTool = false
-		bridgeBuffer.Reset()
+		bridge = newBridge()
 		mediaText.pending = ""
 		toolIndex = 0
 		toolIndexes = make(map[string]int)
 		sentArgs = make(map[string]string)
 	}
 	if lastErr != nil {
-		lastErr = s.chatFailure(ctx, lastErr)
-		if started {
-			mediaText.push("", true, func(link string) string { return replaceNativeLinks(link, nil) })
-		}
-		if !started {
-			status, code := chatErrorStatus(lastErr)
-			writeOpenAIError(w, status, code, lastErr.Error())
-			return
-		}
-		_, code := chatErrorStatus(lastErr)
-		writeStreamError(lastErr.Error(), code)
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		failStream(s.chatFailure(ctx, lastErr))
 		return
 	}
+	var replies []ToolCallReply
 	if bridgeActive {
-		if len(res.Files) > 0 {
-			writeChunk(map[string]any{"attachments": res.Files}, nil)
+		replies, err = bridge.finish()
+		if err != nil {
+			failStream(err)
+			return
 		}
-		text, replies := parseClientToolCalls(replaceNativeLinks(bridgeBuffer.String(), res.Files), bridgeAllowed)
 		if !parallelTools && len(replies) > 1 {
 			replies = replies[:1]
 		}
-		if len(replies) > 0 {
-			if strings.TrimSpace(text) != "" {
-				writeChunk(map[string]any{"content": text}, nil)
-			}
-			for i, reply := range replies {
-				logClientCall(ctx, reply.ID, reply.Name, reply.Arguments)
-				writeChunk(map[string]any{"tool_calls": []map[string]any{{
-					"index": i,
-					"id":    reply.ID,
-					"type":  "function",
-					"function": map[string]any{
-						"name":      reply.Name,
-						"arguments": reply.Arguments,
-					},
-				}}}, nil)
-			}
-			writeChunk(map[string]any{}, "tool_calls")
-		} else {
-			if strings.TrimSpace(text) == "" && len(res.Files) == 0 {
-				writeStreamError("upstream returned no text or tool calls", "upstream_error")
-				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-				flusher.Flush()
+		for i := range replies {
+			replies[i].Arguments = replaceNativeLinks(replies[i].Arguments, res.Files)
+			if !json.Valid([]byte(replies[i].Arguments)) {
+				failStream(fmt.Errorf("upstream returned invalid JSON arguments for client tool %q", replies[i].Name))
 				return
 			}
-			writeChunk(map[string]any{"content": text}, nil)
-			writeChunk(map[string]any{}, "stop")
 		}
-		finish := "stop"
-		if len(replies) > 0 {
-			finish = "tool_calls"
-		}
-		diagnostics.Event(ctx, "info", "chat.response.completed", "stream", true, "finish_reason", finish, "text_bytes", len(text), "client_tool_calls", len(replies), "files", len(res.Files), "usage", usageMap(res.Usage))
-		if req.StreamOptions != nil && req.StreamOptions.IncludeUsage {
-			writePayload(map[string]any{
-				"id":      id,
-				"object":  "chat.completion.chunk",
-				"created": created,
-				"model":   model,
-				"choices": []any{},
-				"usage":   usageMap(res.Usage),
-			})
-		}
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-		flusher.Flush()
-		return
-	}
-	if !sawText && !sawTool && len(res.Files) == 0 {
-		writeStreamError("upstream returned no text or tool calls", "upstream_error")
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-		flusher.Flush()
-		return
 	}
 	mediaText.push("", true, func(link string) string { return replaceNativeLinks(link, res.Files) })
 	if len(res.Files) > 0 {
 		writeChunk(map[string]any{"attachments": res.Files}, nil)
 	}
+	for _, reply := range replies {
+		emitTool(ToolCallState{ID: reply.ID, Name: reply.Name, Arguments: reply.Arguments})
+	}
+	if !sawText && !sawTool && len(res.Files) == 0 {
+		writeStreamError("upstream returned no text or tool calls", "upstream_error")
+		finishStream()
+		return
+	}
 	finish := "stop"
-	if !sawText && sawTool {
+	if sawTool && (bridgeActive || !sawText) {
 		finish = "tool_calls"
 	}
-	diagnostics.Event(ctx, "info", "chat.response.completed", "stream", true, "finish_reason", finish, "text_bytes", len(res.Text), "client_tool_calls", toolIndex, "files", len(res.Files), "usage", usageMap(res.Usage))
+	diagnostics.Event(ctx, "info", "chat.response.completed", "stream", true, "finish_reason", finish, "text_bytes", textBytes, "client_tool_calls", toolIndex, "files", len(res.Files), "usage", usageMap(res.Usage))
 	writeChunk(map[string]any{}, finish)
 	if req.StreamOptions != nil && req.StreamOptions.IncludeUsage {
 		writePayload(map[string]any{
@@ -590,8 +571,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			"usage":   usageMap(res.Usage),
 		})
 	}
-	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-	flusher.Flush()
+	finishStream()
 }
 
 func (s *Server) chatFailure(ctx context.Context, err error) error {
