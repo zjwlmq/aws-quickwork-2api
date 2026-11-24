@@ -185,13 +185,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	id := "chatcmpl-" + strings.ReplaceAll(uuid(), "-", "")
 	created := time.Now().Unix()
 	in := ChatInput{
-		Prompt:       prompt,
-		Model:        model,
-		ThreadID:     threadID,
-		Title:        titleFor(lastUserText(req.Messages)),
-		SystemPrompt: systemPromptText,
-		ToolPrompt:   bridgePrompt,
-		Attachments:  attachments,
+		Prompt:          prompt,
+		Model:           model,
+		ReasoningEffort: req.ReasoningEffort,
+		ThreadID:        threadID,
+		Title:           titleFor(lastUserText(req.Messages)),
+		SystemPrompt:    systemPromptText,
+		ToolPrompt:      bridgePrompt,
+		Attachments:     attachments,
 	}
 	ctx = diagnostics.With(ctx, "completion_id", id)
 	logPreparedContext(ctx, in, bridgeActive, choiceMode, choiceName)
@@ -265,6 +266,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		message := map[string]any{"role": "assistant"}
+		if res.Thinking != "" {
+			message["reasoning_content"] = res.Thinking
+		}
 		if strings.TrimSpace(text) == "" {
 			message["content"] = nil
 		} else {
@@ -472,6 +476,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			return s.upstream.Chat(callCtx, sess, in, emit)
 		}, func(ev StreamEvent) error {
 			switch ev.Type {
+			case "thinking":
+				writeChunk(map[string]any{"reasoning_content": ev.Text}, nil)
 			case "text":
 				if ev.Text == "" {
 					return nil

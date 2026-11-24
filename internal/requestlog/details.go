@@ -62,6 +62,12 @@ func redact(value any, depth int) any {
 				out[key] = "[REDACTED]"
 				continue
 			}
+			if lower == "reasoning_content" {
+				if text, ok := v.(string); ok {
+					out[key] = map[string]any{"omitted": "reasoning content", "bytes": len(text)}
+					continue
+				}
+			}
 			if lower == "file_data" || lower == "image_data" || (lower == "data" && (isBase64 || x["format"] != nil)) {
 				if text, ok := v.(string); ok {
 					out[key] = map[string]any{"omitted": "binary data", "encoded_bytes": len(text), "sha256": diagnostics.Fingerprint(text)}

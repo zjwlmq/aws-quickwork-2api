@@ -203,7 +203,7 @@ func (t *trace) persist() {
 			attempts = append(attempts, *a)
 		}
 	}
-	detail := map[string]any{"record": record, "request": t.request, "response": t.response, "attempts": attempts, "events": append([]map[string]any(nil), t.events...), "diagnostic_request_id": record.ID, "redaction_note": "凭据和下载签名已脱敏；媒体原始数据已省略；单侧正文最多捕获 512 KiB"}
+	detail := map[string]any{"record": record, "request": t.request, "response": t.response, "attempts": attempts, "events": append([]map[string]any(nil), t.events...), "diagnostic_request_id": record.ID, "redaction_note": "凭据和下载签名已脱敏。媒体原始数据和推理片段已省略。单侧正文最多捕获 512 KiB。"}
 	t.mu.Unlock()
 	t.recorder.persist(record, detail)
 }

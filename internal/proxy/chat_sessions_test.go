@@ -19,7 +19,7 @@ import (
 )
 
 type capturedChat struct {
-	thread, account, prompt, system string
+	thread, account, prompt, system, thinkingEffort string
 }
 
 type nativeChatFixture struct {
@@ -56,7 +56,13 @@ func newNativeChatFixture(t *testing.T) *nativeChatFixture {
 			if json.Unmarshal(decoded, &frame) != nil || frame.Type != "user_message" {
 				continue
 			}
-			turn := capturedChat{stringValue(frame.Payload, "thread_id"), r.Header.Get("Authorization"), stringValue(frame.Payload, "text"), stringValue(frame.Payload, "custom_prompt")}
+			turn := capturedChat{
+				thread:         stringValue(frame.Payload, "thread_id"),
+				account:        r.Header.Get("Authorization"),
+				prompt:         stringValue(frame.Payload, "text"),
+				system:         stringValue(frame.Payload, "custom_prompt"),
+				thinkingEffort: stringValue(frame.Payload, "thinking_effort"),
+			}
 			f.mu.Lock()
 			f.turns = append(f.turns, turn)
 			answer := f.answer

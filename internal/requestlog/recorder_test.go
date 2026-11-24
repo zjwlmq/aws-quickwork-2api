@@ -79,6 +79,7 @@ func TestRecoveredSSEActualUsageRedactionAndDiskPersistence(t *testing.T) {
 		diagnostics.Event(two, "info", "account.selected")
 		diagnostics.Event(two, "info", "upstream.turn.finished", "upstream_usage", map[string]any{"input_tokens": 1000, "cache_read_tokens": 200, "cache_write_tokens": 50, "output_tokens": 10, "total_tokens": 1260})
 		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"PRIVATE_REASONING_FIXTURE\"}}]}\n\n")
 		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"answer text\"}}\n\n")
 		w.(http.Flusher).Flush()
 		diagnostics.Event(ctx, "info", "chat.response.completed", "finish_reason", "stop")
@@ -101,7 +102,7 @@ func TestRecoveredSSEActualUsageRedactionAndDiskPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(detail)
-	for _, secret := range []string{"sk-test-private-request-secret", "opaque-upstream-secret-123456", "opaque-input-key-123", "secret-argument-123", "BINARY_IMAGE_BYTES", "user-account-session-123", "unknown-secret-key", "private-password", "private-user"} {
+	for _, secret := range []string{"sk-test-private-request-secret", "opaque-upstream-secret-123456", "opaque-input-key-123", "secret-argument-123", "BINARY_IMAGE_BYTES", "user-account-session-123", "unknown-secret-key", "private-password", "private-user", "PRIVATE_REASONING_FIXTURE"} {
 		if strings.Contains(string(b), secret) {
 			t.Fatalf("detail leaked secret: %s", secret)
 		}

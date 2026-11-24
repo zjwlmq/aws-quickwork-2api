@@ -37,6 +37,7 @@ func NewUpstream(cfg *config.Config) *Upstream {
 type ChatInput struct {
 	Prompt          string
 	Model           string
+	ReasoningEffort string
 	ThreadID        string
 	Title           string
 	SystemPrompt    string
@@ -76,7 +77,7 @@ func (u *Usage) add(v Usage) {
 	u.CacheWriteTokens += v.CacheWriteTokens
 }
 
-// StreamEvent is a text delta or a completed tool call.
+// StreamEvent is a text delta, a visible thinking delta or a tool call.
 type StreamEvent struct {
 	Type     string
 	Text     string
@@ -87,6 +88,7 @@ type EventFunc func(StreamEvent) error
 
 type ChatResult struct {
 	Text      string
+	Thinking  string
 	ToolCalls []ToolCallState
 	Usage     Usage
 	Artifacts []NativeArtifact
@@ -94,8 +96,8 @@ type ChatResult struct {
 	ThreadID  string
 }
 
-// Chat sends one prompt through the QuickWork chat bidi WebSocket. Text
-// deltas and completed tool calls are reported through onEvent.
+// Chat sends one prompt through the QuickWork chat bidi WebSocket and reports
+// visible thinking, text and tool calls through onEvent.
 func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEvent EventFunc) (result ChatResult, err error) {
 	if strings.TrimSpace(in.Prompt) == "" {
 		return ChatResult{}, fmt.Errorf("prompt is empty")
@@ -318,8 +320,9 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 	if strings.TrimSpace(in.SystemPrompt) != "" {
 		payload["custom_prompt"] = in.SystemPrompt
 	}
-	if u.cfg.ThinkingEffort != "" && u.cfg.ThinkingEffort != "off" {
-		payload["thinking_effort"] = u.cfg.ThinkingEffort
+	effort := quickThinkingEffort(in.Model, in.ReasoningEffort, u.cfg.ThinkingEffort)
+	if effort != "" {
+		payload["thinking_effort"] = effort
 	}
 	if len(in.Attachments) > 0 {
 		payload["attachments"] = in.Attachments
@@ -328,7 +331,7 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 		return ChatResult{}, fmt.Errorf("send user_message: %w", err)
 	}
 
-	diagnostics.Event(ctx, "info", "upstream.context.sent", "prompt_bytes", len(in.Prompt), "custom_prompt_present", in.SystemPrompt != "", "custom_prompt_bytes", len(in.SystemPrompt), "system_wire_field", "custom_prompt", "attachment_count", len(in.Attachments), "model", in.Model)
+	diagnostics.Event(ctx, "info", "upstream.context.sent", "prompt_bytes", len(in.Prompt), "custom_prompt_present", in.SystemPrompt != "", "custom_prompt_bytes", len(in.SystemPrompt), "system_wire_field", "custom_prompt", "attachment_count", len(in.Attachments), "model", in.Model, "thinking_effort", effort)
 	result, err = u.readEvents(ctx, conn, gateway, onEvent)
 	result.ThreadID = threadID
 	if err != nil {
@@ -342,6 +345,25 @@ func (u *Upstream) Chat(ctx context.Context, sess *Session, in ChatInput, onEven
 	}
 
 	return result, nil
+}
+
+func quickThinkingEffort(model, requested, fallback string) string {
+	if model != "smart" && model != "balanced" {
+		return ""
+	}
+	for _, value := range []string{requested, fallback} {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "off", "none":
+			return "off"
+		case "low", "minimal":
+			return "low"
+		case "medium":
+			return "medium"
+		case "high", "xhigh", "max":
+			return "high"
+		}
+	}
+	return ""
 }
 
 func (u *Upstream) dialInfo(sess *Session) (wsURL string, headers http.Header, gateway bool, err error) {
@@ -415,6 +437,7 @@ func (u *Upstream) dialInfo(sess *Session) (wsURL string, headers http.Header, g
 func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway bool, onEvent EventFunc) (ChatResult, error) {
 	var result ChatResult
 	var text strings.Builder
+	var thinking strings.Builder
 	sawMessageComplete := false
 	var completeDeadline time.Time
 	started := time.Now()
@@ -423,7 +446,7 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 	finishReason := "unknown"
 	firstText := true
 	defer func() {
-		diagnostics.Event(ctx, "info", "upstream.stream.summary", "duration_ms", time.Since(started).Milliseconds(), "event_count", sequence, "event_counts", eventCounts, "finish_reason", finishReason, "text_bytes", text.Len(), "saw_message_complete", sawMessageComplete)
+		diagnostics.Event(ctx, "info", "upstream.stream.summary", "duration_ms", time.Since(started).Milliseconds(), "event_count", sequence, "event_counts", eventCounts, "finish_reason", finishReason, "text_bytes", text.Len(), "thinking_bytes", thinking.Len(), "saw_message_complete", sawMessageComplete)
 	}()
 
 	toolCalls := make(map[string]*ToolCallState)
@@ -471,6 +494,7 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 	}
 	finish := func() (ChatResult, error) {
 		result.Text = text.String()
+		result.Thinking = thinking.String()
 		result.ToolCalls = result.ToolCalls[:0]
 		for _, id := range toolOrder {
 			tc := toolCalls[id]
@@ -584,6 +608,19 @@ func (u *Upstream) readEvents(ctx context.Context, conn *websocket.Conn, gateway
 			}
 		}
 		switch env.Type {
+		case "thinking_delta":
+			// The native Quick client renders these deltas in the chat UI.
+			delta := deltaText(env.Payload)
+			if delta == "" {
+				continue
+			}
+			thinking.WriteString(delta)
+			if onEvent != nil {
+				if err := onEvent(StreamEvent{Type: "thinking", Text: delta}); err != nil {
+					res, _ := finish()
+					return res, err
+				}
+			}
 		case "text_delta":
 			delta := deltaText(env.Payload)
 			if delta == "" {

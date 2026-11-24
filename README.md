@@ -169,7 +169,7 @@ for chunk in client.chat.completions.create(
 | `surface` | `QUICK_WORK_DESKTOP_WINDOWS` | 上游握手使用的 surfaceType |
 | `outpost_id` / `working_session_id` | 空 | 上游握手可选字段 |
 | `timezone` / `locale` | `UTC` / `en-US` | `user_message` 中的时区与语言 |
-| `thinking_effort` | 空 | `off`、`low`、`medium`、`high` |
+| `thinking_effort` | 空 | `smart`、`balanced` 的默认推理强度，可设 `off`、`low`、`medium`、`high` |
 | `keep_sessions` | `false` | 保留上游会话，不在一轮结束后删除 |
 | `oauth.provider` | `social` | `login` 默认 provider |
 | `oauth.build_stage` | `prod` | `prod`、`beta`、`integ`、`dev` |
@@ -271,6 +271,7 @@ sequenceDiagram
 - 如果客户端 system prompt 要求“必须用原生工具调用”或“禁止把工具调用写成文本”，桥接会附加一条后端能力说明：原生函数调用不可用，仅对列出的客户端工具改用该标记，其他指令保持不变。这是工具协议适配，不是通用提示词注入。
 - 代理解析该标记并返回 OpenAI `tool_calls`，但**不执行工具**；客户端执行后把结果作为 `role: tool` 发回，代理再转成文本上下文。
 - 有客户端工具时，普通正文仍按上游片段发送。工具标记和疑似工具请求的开头 JSON 会暂存识别；完整的 `tool_calls` 在成功结束时返回。
+- `/v1/chat/completions` 支持按请求指定 `reasoning_effort`。`xhigh`、`max` 映射到 Quick 的 `high`，`none` 映射到 `off`。Quick 返回的思考片段通过独立的 `reasoning_content` 字段传给支持它的客户端，具体显示方式由客户端决定。
 - `tool_choice: "none"` 会关闭桥接；`tool_choice` 为具体函数时只接受该函数。上游原生工具事件在名称匹配时仍可转成 `tool_calls`。
 - 非流式响应中，工具调用放在 `choices[0].message.tool_calls`；桥接调用或只有工具且没有最终文本时 `finish_reason` 为 `tool_calls`，否则为 `stop`。
 - 同一会话固定上游账号与原生 `thread_id`。代理持久化账号路由和历史指纹，匹配调用方确认的历史，只发送新增消息和工具结果，不再每轮拼接完整历史。客户端继续按 OpenAI/Anthropic 协议发送历史即可；可选 `X-Thread-Id` 为调用方的隔离标识或代理返回的会话标识，不能用于访问其他 API key 的会话。

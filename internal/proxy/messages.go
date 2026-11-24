@@ -76,6 +76,7 @@ type StreamOptions struct {
 
 type ChatRequest struct {
 	Model             string         `json:"model"`
+	ReasoningEffort   string         `json:"reasoning_effort,omitempty"`
 	Messages          []Message      `json:"messages"`
 	Stream            bool           `json:"stream"`
 	N                 int            `json:"n"`
