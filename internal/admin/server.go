@@ -82,6 +82,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/api/session", s.requireSession(s.sessionInfo))
 	mux.HandleFunc("POST /admin/api/logout", s.requireSession(s.logout))
 	mux.HandleFunc("GET /admin/api/accounts", s.requireSession(s.listAccounts))
+	mux.HandleFunc("POST /admin/api/accounts/import", s.requireSession(s.importAccounts))
+	mux.HandleFunc("POST /admin/api/accounts/export", s.requireSession(s.exportAccounts))
 	mux.HandleFunc("GET /admin/api/quotas", s.requireSession(s.listQuotas))
 	mux.HandleFunc("POST /admin/api/quotas/refresh", s.requireSession(s.listQuotas))
 	mux.HandleFunc("POST /admin/api/accounts/{id}/refresh", s.requireSession(s.refreshAccount))
@@ -291,16 +293,21 @@ func view(a store.Account) accountView {
 }
 
 func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request, sess *session) {
-	list, err := s.store.List(r.Context())
+	filter, ok := accountFilter(w, r)
+	if !ok {
+		return
+	}
+	page, err := s.store.ListAccountPage(r.Context(), filter)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "读取账号失败")
 		return
 	}
-	out := make([]accountView, 0, len(list))
-	for _, a := range list {
+	out := make([]accountView, 0, len(page.Accounts))
+	for _, a := range page.Accounts {
 		out = append(out, view(a))
 	}
-	reply(w, http.StatusOK, map[string]any{"accounts": out})
+	reply(w, http.StatusOK, map[string]any{"accounts": out, "total": page.Total,
+		"page": page.Page, "page_size": page.PageSize, "pages": page.Pages, "summary": page.Summary})
 }
 
 func accountID(w http.ResponseWriter, r *http.Request) (int64, bool) {

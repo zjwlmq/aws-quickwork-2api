@@ -4,6 +4,15 @@
   const state = {
     session: null,
     accounts: [],
+    accountPage: 1,
+    accountPageSize: 20,
+    accountDisplayedPage: 1,
+    accountDisplayedSize: 20,
+    accountPages: 1,
+    accountTotal: 0,
+    accountSummary: { total: 0, ready: 0, attention: 0 },
+    selectedAccounts: new Set(),
+    exportingAccounts: false,
     quotas: [],
     quotaLoading: false,
     connection: null,
@@ -34,6 +43,11 @@
   let requestSearchTimer;
   let quotaPollTimer;
   let quotaLoadVersion = 0;
+  let accountLoadVersion = 0;
+  let accountSearchTimer;
+  let accountAbort;
+  let quotaAbort;
+  let importReadVersion = 0;
   function errorAt(id, message) {
     $(id).textContent = message || "";
     $(id).hidden = !message;
@@ -64,7 +78,7 @@
       }
     }
   }
-  async function api(path, { method = "GET", body } = {}) {
+  async function api(path, { method = "GET", body, signal } = {}) {
     const headers = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (method !== "GET" && state.session)
@@ -75,6 +89,7 @@
       credentials: "same-origin",
       body: body === undefined ? undefined : JSON.stringify(body),
       cache: "no-store",
+      signal,
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -91,6 +106,20 @@
   function showLogin(clearPassword = true) {
     state.session = null;
     state.accounts = [];
+    state.accountPage = 1;
+    state.accountPages = 1;
+    state.accountTotal = 0;
+    state.accountSummary = { total: 0, ready: 0, attention: 0 };
+    state.selectedAccounts.clear();
+    accountLoadVersion++;
+    accountAbort?.abort();
+    quotaAbort?.abort();
+    clearTimeout(accountSearchTimer);
+    state.loading = false;
+    busy($("refresh-list"), false);
+    $("account-search").value = "";
+    $("status-filter").value = "all";
+    closeImport(true);
     state.quotas = [];
     state.quotaLoading = false;
     quotaLoadVersion++;
@@ -182,25 +211,43 @@
         }).format(new Date(epoch * 1000))
       : "—";
   }
-  function filteredAccounts() {
-    const query = $("account-search").value.trim().toLowerCase();
-    const filter = $("status-filter").value;
-    return state.accounts.filter(
-      (a) =>
-        (!query ||
-          `${a.name} ${a.email} ${a.id}`.toLowerCase().includes(query)) &&
-        (filter === "all" || a.status === filter),
-    );
+  function renderAccountSelection() {
+    const selected = state.selectedAccounts;
+    for (const checkbox of $("account-rows").querySelectorAll("[data-select-account]")) {
+      checkbox.checked = selected.has(Number(checkbox.dataset.selectAccount));
+      checkbox.disabled = state.loading;
+      checkbox.closest("tr").classList.toggle("selected-account", checkbox.checked);
+    }
+    const count = state.accounts.filter((a) => selected.has(a.id)).length;
+    $("select-account-page").checked = count > 0 && count === state.accounts.length;
+    $("select-account-page").indeterminate = count > 0 && count < state.accounts.length;
+    $("select-account-page").disabled = state.loading || !state.accounts.length;
+    $("account-selection").hidden = !selected.size;
+    $("selected-account-count").textContent = `已选 ${selected.size} 个`;
+    if (!state.exportingAccounts)
+      $("export-accounts").textContent = selected.size ? `导出已选 (${selected.size})` : "导出全部";
+    $("export-accounts").disabled = state.exportingAccounts || state.loading || (!selected.size && !state.accountSummary.total);
+  }
+  function renderAccountPagination() {
+    $("account-rows").setAttribute("aria-busy", String(state.loading));
+    const first = state.accountTotal ? (state.accountPage - 1) * state.accountPageSize + 1 : 0;
+    const last = Math.min(state.accountPage * state.accountPageSize, state.accountTotal);
+    $("account-range").textContent = `显示 ${first}–${last} 条，共 ${state.accountTotal} 个账号`;
+    $("account-page-input").value = state.accountPage;
+    $("account-page-input").max = state.accountPages;
+    $("account-page-input").disabled = state.loading;
+    $("account-page-count").textContent = ` / ${state.accountPages} 页`;
+    $("account-page-size").disabled = state.loading;
+    $("account-page-size").value = state.accountPageSize;
+    $("account-previous").disabled = state.loading || state.accountPage <= 1;
+    $("account-next").disabled = state.loading || state.accountPage >= state.accountPages;
+    renderAccountSelection();
   }
   function renderAccounts() {
-    $("count-total").textContent = state.accounts.length;
-    $("count-ready").textContent = state.accounts.filter(
-      (a) => a.status === "ready",
-    ).length;
-    $("count-attention").textContent = state.accounts.filter(
-      (a) => a.status === "error" || a.status === "expired",
-    ).length;
-    const list = filteredAccounts();
+    $("count-total").textContent = state.accountSummary.total;
+    $("count-ready").textContent = state.accountSummary.ready;
+    $("count-attention").textContent = state.accountSummary.attention;
+    const list = state.accounts;
     $("account-rows").innerHTML = list
       .map((a) => {
         const name = a.email || a.name || `账号 ${a.id}`;
@@ -210,16 +257,17 @@
             : a.provider === "enterprise"
               ? "企业 SSO"
               : a.provider;
-        return `<tr><td><div class="account-name"><span class="avatar" aria-hidden="true">${escape(name.slice(0, 1).toUpperCase())}</span><div><span class="account-email" title="${escape(name)}">${escape(name)}</span><span class="account-secondary">${escape(a.name || `账号 #${a.id}`)}</span></div></div></td><td>${escape(provider)}<span class="account-secondary">${escape(a.region)}</span></td><td><span class="status ${escape(a.status)}">${escape(statusLabels[a.status] || a.status)}</span>${a.last_error ? `<p class="account-error" title="${escape(a.last_error)}">${escape(a.last_error)}</p>` : ""}</td><td class="account-quota" data-quota-account="${a.id}"></td><td>${date(a.expires_at)}<span class="account-secondary">${a.expires_at && a.expires_at < Date.now() / 1000 ? "已过期" : "登录状态"}</span></td><td>${escape(a.use_count.toLocaleString("zh-CN"))}<span class="account-secondary">最近 ${date(a.last_used_at)}</span></td><td><div class="row-actions"><button class="row-action refresh" type="button" data-action="refresh" data-id="${a.id}" aria-label="刷新 ${escape(name)}">刷新</button><button class="row-action" type="button" data-action="toggle" data-id="${a.id}" aria-label="${a.disabled ? "启用" : "停用"} ${escape(name)}">${a.disabled ? "启用" : "停用"}</button><button class="row-action delete" type="button" data-action="delete" data-id="${a.id}" aria-label="删除 ${escape(name)}">删除</button></div></td></tr>`;
+        return `<tr><td class="account-select"><input type="checkbox" data-select-account="${a.id}" aria-label="选择 ${escape(name)}" /></td><td><div class="account-name"><span class="avatar" aria-hidden="true">${escape(name.slice(0, 1).toUpperCase())}</span><div><span class="account-email" title="${escape(name)}">${escape(name)}</span><span class="account-secondary">${escape(a.name || `账号 #${a.id}`)}</span></div></div></td><td>${escape(provider)}<span class="account-secondary">${escape(a.region)}</span></td><td><span class="status ${escape(a.status)}">${escape(statusLabels[a.status] || a.status)}</span>${a.last_error ? `<p class="account-error" title="${escape(a.last_error)}">${escape(a.last_error)}</p>` : ""}</td><td class="account-quota" data-quota-account="${a.id}"></td><td>${date(a.expires_at)}<span class="account-secondary">${a.expires_at && a.expires_at < Date.now() / 1000 ? "已过期" : "登录状态"}</span></td><td>${escape(a.use_count.toLocaleString("zh-CN"))}<span class="account-secondary">最近 ${date(a.last_used_at)}</span></td><td><div class="row-actions"><button class="row-action refresh" type="button" data-action="refresh" data-id="${a.id}" aria-label="刷新 ${escape(name)}">刷新</button><button class="row-action" type="button" data-action="toggle" data-id="${a.id}" aria-label="${a.disabled ? "启用" : "停用"} ${escape(name)}">${a.disabled ? "启用" : "停用"}</button><button class="row-action delete" type="button" data-action="delete" data-id="${a.id}" aria-label="删除 ${escape(name)}">删除</button></div></td></tr>`;
       })
       .join("");
-    const filtered = state.accounts.length > 0;
+    const filtered = state.accountSummary.total > 0;
     $("empty-state").hidden = list.length > 0;
     $("empty-title").textContent = filtered ? "没有匹配的账号" : "暂无账号";
     $("empty-description").textContent = filtered
       ? "试试其他关键词，或切换账号状态。"
       : "添加第一个 Amazon Quick 账号，开始使用 API。";
     $("empty-add").hidden = filtered;
+    renderAccountPagination();
     renderQuotas();
   }
   function quotaPercent(value) {
@@ -297,9 +345,10 @@
     }
   }
   async function loadQuotas(force = false) {
-    if (!state.session || state.page !== "accounts" || state.quotaLoading)
+    if (!state.session || state.page !== "accounts" || state.quotaLoading || state.loading || !state.accounts.length)
       return;
     const version = ++quotaLoadVersion;
+    quotaAbort = new AbortController();
     state.quotaLoading = true;
     clearTimeout(quotaPollTimer);
     busy($("refresh-quotas"), true, "查询中…");
@@ -307,8 +356,10 @@
     errorAt("quota-error", "");
     renderQuotas();
     try {
-      const data = await api(force ? "/quotas/refresh" : "/quotas", {
+      const ids = state.accounts.map((a) => a.id).join(",");
+      const data = await api((force ? "/quotas/refresh" : "/quotas") + "?account_ids=" + encodeURIComponent(ids), {
         method: force ? "POST" : "GET",
+        signal: quotaAbort.signal,
       });
       if (
         version !== quotaLoadVersion ||
@@ -358,24 +409,87 @@
     }
   }
   async function loadAccounts() {
-    if (state.loading) return;
+    if (!state.session) return;
+    const version = ++accountLoadVersion;
+    clearTimeout(accountSearchTimer);
+    accountAbort?.abort();
+    accountAbort = new AbortController();
+    quotaAbort?.abort();
+    quotaLoadVersion++;
+    clearTimeout(quotaPollTimer);
+    state.quotaLoading = false;
+    busy($("refresh-quotas"), false);
+    if (!state.loading) busy($("refresh-list"), true);
     state.loading = true;
-    busy($("refresh-list"), true);
+    renderAccountPagination();
     if (!state.accounts.length) $("table-loading").hidden = false;
     try {
-      const data = await api("/accounts");
+      const query = new URLSearchParams({ page: state.accountPage, page_size: state.accountPageSize, search: $("account-search").value.trim(), status: $("status-filter").value });
+      const data = await api("/accounts?" + query, { signal: accountAbort.signal });
+      if (version !== accountLoadVersion || !state.session) return;
       state.accounts = data.accounts;
+      state.accountPage = data.page;
+      state.accountDisplayedPage = data.page;
+      state.accountDisplayedSize = data.page_size;
+      state.accountPages = data.pages;
+      state.accountTotal = data.total;
+      state.accountSummary = data.summary;
       renderAccounts();
-      if (state.page === "accounts") loadQuotas();
       errorAt("page-error-text", "");
       $("page-error").hidden = true;
     } catch (error) {
+      if (version !== accountLoadVersion || error.name === "AbortError" || !state.session) return;
+      state.accountPage = state.accountDisplayedPage;
+      state.accountPageSize = state.accountDisplayedSize;
       $("page-error-text").textContent = error.message;
       $("page-error").hidden = false;
     } finally {
-      state.loading = false;
-      busy($("refresh-list"), false);
-      $("table-loading").hidden = true;
+      if (version === accountLoadVersion) {
+        state.loading = false;
+        busy($("refresh-list"), false);
+        $("table-loading").hidden = true;
+        renderAccountPagination();
+        if (state.page === "accounts") loadQuotas();
+      }
+    }
+  }
+  function closeImport(force = false) {
+    if (!force && $("confirm-import").getAttribute("aria-busy") === "true") return;
+    importReadVersion++;
+    $("import-dialog").close();
+    $("account-import-json").value = "";
+    $("account-import-file").value = "";
+    $("account-import-update").checked = false;
+    $("account-import-preview").textContent = "每次最多 1000 个账号，文件不超过 16 MiB。";
+    errorAt("account-import-error", "");
+    $("confirm-import").disabled = true;
+  }
+  function parseAccountImport() {
+    const raw = $("account-import-json").value.replace(/^\uFEFF/, "").trim();
+    if (new TextEncoder().encode(raw).length > 16 * 1024 * 1024)
+      throw new Error("账号文件不能超过 16 MiB");
+    let data;
+    try { data = JSON.parse(raw); }
+    catch { throw new Error("JSON 格式无效，请选择本站导出的账号文件"); }
+    const document = Array.isArray(data) ? { accounts: data } : data;
+    if (!document || !Array.isArray(document.accounts) || !document.accounts.length || document.accounts.length > 1000)
+      throw new Error("每次导入需要包含 1 到 1000 个账号");
+    return document;
+  }
+  function previewAccountImport() {
+    errorAt("account-import-error", "");
+    if (!$("account-import-json").value.trim()) {
+      $("confirm-import").disabled = true;
+      $("account-import-preview").textContent = "每次最多 1000 个账号，文件不超过 16 MiB。";
+      return;
+    }
+    try {
+      const document = parseAccountImport();
+      $("account-import-preview").textContent = `已读取 ${document.accounts.length} 个账号，提交时将检查授权字段。`;
+      $("confirm-import").disabled = false;
+    } catch (error) {
+      $("account-import-preview").textContent = error.message;
+      $("confirm-import").disabled = true;
     }
   }
   async function loadConnection() {
@@ -408,6 +522,7 @@
     logLoadVersion++;
     requestLoadVersion++;
     quotaLoadVersion++;
+    quotaAbort?.abort();
     state.quotaLoading = false;
     clearTimeout(quotaPollTimer);
     busy($("refresh-quotas"), false);
@@ -1144,8 +1259,137 @@
       loadQuotas();
   });
   $("retry-load").addEventListener("click", loadAccounts);
-  $("account-search").addEventListener("input", renderAccounts);
-  $("status-filter").addEventListener("change", renderAccounts);
+  function resetAccountFilter() {
+    state.accountPage = 1;
+    state.selectedAccounts.clear();
+    loadAccounts();
+  }
+  $("account-search").addEventListener("input", () => {
+    clearTimeout(accountSearchTimer);
+    accountSearchTimer = setTimeout(resetAccountFilter, 250);
+  });
+  $("status-filter").addEventListener("change", resetAccountFilter);
+  $("account-page-size").addEventListener("change", () => {
+    state.accountPageSize = Number($("account-page-size").value);
+    state.accountPage = 1;
+    loadAccounts();
+  });
+  $("account-previous").addEventListener("click", () => {
+    if (state.loading || state.accountPage <= 1) return;
+    state.accountPage--;
+    loadAccounts();
+  });
+  $("account-next").addEventListener("click", () => {
+    if (state.loading || state.accountPage >= state.accountPages) return;
+    state.accountPage++;
+    loadAccounts();
+  });
+  $("account-page-input").addEventListener("change", () => {
+    const page = Number($("account-page-input").value);
+    if (!state.loading && Number.isInteger(page) && page >= 1 && page <= state.accountPages) {
+      state.accountPage = page;
+      loadAccounts();
+    } else renderAccountPagination();
+  });
+  $("account-page-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); event.target.blur(); }
+  });
+  $("select-account-page").addEventListener("change", (event) => {
+    for (const account of state.accounts) {
+      if (event.target.checked) state.selectedAccounts.add(account.id);
+      else state.selectedAccounts.delete(account.id);
+    }
+    renderAccountSelection();
+  });
+  $("account-rows").addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-select-account]");
+    if (!checkbox) return;
+    const id = Number(checkbox.dataset.selectAccount);
+    if (checkbox.checked) state.selectedAccounts.add(id);
+    else state.selectedAccounts.delete(id);
+    renderAccountSelection();
+  });
+  $("clear-account-selection").addEventListener("click", () => {
+    state.selectedAccounts.clear();
+    renderAccountSelection();
+  });
+  $("import-accounts").addEventListener("click", () => {
+    closeImport();
+    $("import-dialog").showModal();
+  });
+  $("close-import").addEventListener("click", () => closeImport());
+  $("cancel-import").addEventListener("click", () => closeImport());
+  $("import-dialog").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeImport();
+  });
+  $("account-import-json").addEventListener("input", () => {
+    importReadVersion++;
+    previewAccountImport();
+  });
+  $("account-import-file").addEventListener("change", async () => {
+    const version = ++importReadVersion;
+    const file = $("account-import-file").files[0];
+    if (!file) return;
+    $("account-import-json").value = "";
+    $("confirm-import").disabled = true;
+    errorAt("account-import-error", "");
+    try {
+      if (file.size > 16 * 1024 * 1024) throw new Error("账号文件不能超过 16 MiB");
+      const raw = await file.text();
+      if (version !== importReadVersion || !$("import-dialog").open) return;
+      $("account-import-json").value = raw;
+      previewAccountImport();
+    } catch (error) {
+      if (version === importReadVersion) errorAt("account-import-error", error.message);
+    }
+  });
+  $("import-accounts-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if ($("confirm-import").getAttribute("aria-busy") === "true") return;
+    errorAt("account-import-error", "");
+    let body;
+    try { body = { ...parseAccountImport(), update_existing: $("account-import-update").checked }; }
+    catch (error) { errorAt("account-import-error", error.message); return; }
+    busy($("confirm-import"), true, "正在导入…");
+    try {
+      const result = await api("/accounts/import", { method: "POST", body });
+      closeImport(true);
+      toast(`导入完成：新增 ${result.added}，更新 ${result.updated}，跳过 ${result.skipped}`);
+      state.selectedAccounts.clear();
+      state.accountPage = 1;
+      await loadAccounts();
+    } catch (error) {
+      errorAt("account-import-error", error.message);
+    } finally {
+      busy($("confirm-import"), false);
+      if (!$("import-dialog").open) $("confirm-import").disabled = true;
+    }
+  });
+  $("export-accounts").addEventListener("click", async () => {
+    if (state.exportingAccounts) return;
+    state.exportingAccounts = true;
+    busy($("export-accounts"), true, "正在导出…");
+    try {
+      const data = await api("/accounts/export", { method: "POST", body: { ids: [...state.selectedAccounts] } });
+      const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `quickwork-accounts-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast(`已导出 ${data.accounts.length} 个账号`);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      state.exportingAccounts = false;
+      busy($("export-accounts"), false);
+      renderAccountSelection();
+    }
+  });
   $("copy-base").addEventListener("click", () =>
     copy(state.connection?.base_url, $("copy-base")),
   );
@@ -1317,6 +1561,7 @@
     errorAt("delete-error", "");
     try {
       await api(`/accounts/${state.deleting.id}`, { method: "DELETE" });
+      state.selectedAccounts.delete(state.deleting.id);
       $("delete-dialog").close();
       state.deleting = null;
       toast("账号已删除");

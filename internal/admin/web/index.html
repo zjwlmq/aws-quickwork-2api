@@ -168,6 +168,8 @@
             </p>
           </div>
           <div class="header-actions" id="header-actions">
+            <button class="button" id="import-accounts" type="button">导入 JSON</button>
+            <button class="button" id="export-accounts" type="button">导出全部</button>
             <button class="button" id="refresh-list" type="button">
               <svg class="icon" aria-hidden="true">
                 <use href="#i-refresh" /></svg
@@ -230,6 +232,7 @@
               <table class="accounts-table">
                 <thead>
                   <tr>
+                    <th class="account-select"><input id="select-account-page" type="checkbox" aria-label="选择当前页全部账号" /></th>
                     <th>账号</th>
                     <th>登录方式</th>
                     <th>状态</th>
@@ -263,8 +266,25 @@
                 <p>正在读取账号…</p>
               </div>
             </div>
+            <div class="accounts-pagination" aria-label="账号分页">
+              <div class="account-page-summary">
+                <span id="account-range" role="status">共 0 个账号</span>
+                <span id="account-selection" hidden><span id="selected-account-count"></span><button id="clear-account-selection" class="text-button" type="button">清空选择</button></span>
+              </div>
+              <div class="account-page-controls">
+                <select id="account-page-size" aria-label="每页账号数">
+                  <option value="10">10 条 / 页</option>
+                  <option value="20" selected>20 条 / 页</option>
+                  <option value="50">50 条 / 页</option>
+                  <option value="100">100 条 / 页</option>
+                </select>
+                <button id="account-previous" class="button small" type="button" disabled>上一页</button>
+                <label class="account-page-position">第 <input id="account-page-input" type="number" min="1" value="1" aria-label="跳转到账号页码" /><span id="account-page-count"> / 1 页</span></label>
+                <button id="account-next" class="button small" type="button" disabled>下一页</button>
+              </div>
+            </div>
           </section>
-          <p class="privacy-note">账号凭据仅保存在服务器，列表不展示 Token。</p>
+          <p class="privacy-note">列表不展示 Token。导出的 JSON 包含账号授权凭据，请妥善保存。</p>
         </section>
 
         <section
@@ -643,6 +663,24 @@
           <pre id="request-output-json"></pre>
         </section>
       </div>
+    </dialog>
+
+    <dialog id="import-dialog" class="modal" aria-labelledby="import-title">
+      <div class="modal-header">
+        <div><h2 id="import-title">导入账号</h2><p>选择本站导出的 JSON 文件，也可以直接粘贴内容。</p></div>
+        <button id="close-import" class="icon-button" type="button" aria-label="关闭账号导入"><svg class="icon" aria-hidden="true"><use href="#i-close" /></svg></button>
+      </div>
+      <form id="import-accounts-form">
+        <label for="account-import-file">JSON 文件</label>
+        <input id="account-import-file" type="file" accept=".json,application/json" />
+        <label for="account-import-json">JSON 内容</label>
+        <textarea id="account-import-json" rows="7" spellcheck="false" autocomplete="off" placeholder="选择文件后自动填入，或粘贴账号 JSON" aria-describedby="account-import-preview"></textarea>
+        <p id="account-import-preview" class="form-hint" role="status">每次最多 1000 个账号，文件不超过 16 MiB。</p>
+        <label class="account-import-option"><input id="account-import-update" type="checkbox" /><span>更新已有账号的授权和启用状态</span></label>
+        <p class="form-hint">按邮箱和租户识别重复账号，默认跳过。文件检查通过后才会统一写入，导入时不向 Quick 发起请求。</p>
+        <div id="account-import-error" class="form-error" role="alert" hidden></div>
+        <div class="modal-actions"><button id="cancel-import" class="button" type="button">取消</button><button id="confirm-import" class="button primary" type="submit" disabled>导入账号</button></div>
+      </form>
     </dialog>
 
     <dialog id="add-dialog" class="modal" aria-labelledby="add-title">

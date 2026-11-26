@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,7 +86,32 @@ func newQuotaHTTP() *http.Client {
 }
 
 func (s *Server) listQuotas(w http.ResponseWriter, r *http.Request, _ *session) {
-	list, err := s.store.List(r.Context())
+	var ids []int64
+	selected := r.URL.Query().Has("account_ids")
+	if selected {
+		parts := strings.Split(r.URL.Query().Get("account_ids"), ",")
+		if len(parts) > 100 {
+			fail(w, 400, "每次最多查询 100 个账号的额度")
+			return
+		}
+		seen := make(map[int64]bool, len(parts))
+		for _, part := range parts {
+			id, err := strconv.ParseInt(part, 10, 64)
+			if err != nil || id <= 0 || seen[id] {
+				fail(w, 400, "账号 ID 无效或重复")
+				return
+			}
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	var list []store.Account
+	var err error
+	if selected {
+		list, err = s.store.SelectedAccounts(r.Context(), ids, 100)
+	} else {
+		list, err = s.store.List(r.Context())
+	}
 	if err != nil {
 		fail(w, 500, "读取账号失败")
 		return
@@ -112,13 +138,15 @@ func (s *Server) listQuotas(w http.ResponseWriter, r *http.Request, _ *session) 
 	wg.Wait()
 	// Discard cache entries for deleted accounts without affecting in-flight reads.
 	s.quotaMu.Lock()
-	ids := make(map[int64]bool, len(list))
+	liveIDs := make(map[int64]bool, len(list))
 	for _, a := range list {
-		ids[a.ID] = true
+		liveIDs[a.ID] = true
 	}
-	for id := range s.quotas {
-		if !ids[id] && s.quotas[id].loading == nil {
-			delete(s.quotas, id)
+	if !selected {
+		for id := range s.quotas {
+			if !liveIDs[id] && s.quotas[id].loading == nil {
+				delete(s.quotas, id)
+			}
 		}
 	}
 	s.quotaMu.Unlock()

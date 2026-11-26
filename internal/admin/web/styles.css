@@ -367,30 +367,30 @@ strong {
 }
 /* Account quota stays within its table row. */
 .accounts-table {
-  min-width: 1120px;
+  min-width: 1060px;
 }
 .accounts-panel .table-scroll:has(#account-rows > tr) {
   min-height: 0;
 }
-.accounts-table th:nth-child(1) {
-  width: 21%;
-}
 .accounts-table th:nth-child(2) {
-  width: 11%;
+  width: 21%;
 }
 .accounts-table th:nth-child(3) {
   width: 11%;
 }
 .accounts-table th:nth-child(4) {
-  width: 17%;
+  width: 11%;
 }
 .accounts-table th:nth-child(5) {
-  width: 13%;
+  width: 17%;
 }
 .accounts-table th:nth-child(6) {
-  width: 12%;
+  width: 13%;
 }
 .accounts-table th:nth-child(7) {
+  width: 12%;
+}
+.accounts-table th:nth-child(8) {
   width: 15%;
 }
 .accounts-panel #refresh-quotas {
@@ -2097,5 +2097,135 @@ tbody tr:hover {
     width: 100%;
     padding: 10px 5px;
     gap: 5px;
+  }
+}
+
+/* Compact account transfer actions and server-side pagination. */
+#header-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+#header-actions .button {
+  min-height: 42px;
+  padding: 9px 14px;
+  font-size: 14px;
+}
+.accounts-table .account-select {
+  width: 42px;
+  min-width: 42px;
+  padding-inline: 13px;
+  text-align: center;
+  vertical-align: middle;
+}
+.accounts-table input[type="checkbox"],
+.account-import-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+.accounts-table tr.selected-account {
+  background: #f5f7ff;
+}
+.accounts-table th:not(.account-select),
+.accounts-table td:not(.account-select) {
+  padding-inline: 12px;
+}
+.accounts-table .account-email {
+  max-width: 175px;
+}
+.accounts-table .row-actions {
+  gap: 6px;
+}
+.accounts-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px 4px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.account-page-summary,
+.account-page-controls,
+#account-selection {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.account-page-summary {
+  gap: 8px 18px;
+}
+.account-page-controls {
+  gap: 8px;
+}
+.account-page-controls select {
+  min-height: 34px;
+  width: auto;
+  padding: 5px 28px 5px 10px;
+  font-size: 12px;
+}
+.account-page-controls .button {
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.account-page-position {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+#account-page-input {
+  width: 48px;
+  height: 34px;
+  min-height: 0;
+  padding: 4px;
+  text-align: center;
+  font-size: 12px;
+  -moz-appearance: textfield;
+}
+#account-page-input::-webkit-inner-spin-button,
+#account-page-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.account-import-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 16px 0 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+#account-import-json {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+@media (max-width: 760px) {
+  #header-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .account-page-controls {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    width: 100%;
+    gap: 5px;
+  }
+  .account-page-controls select {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .account-page-controls .button {
+    padding-inline: 8px;
   }
 }

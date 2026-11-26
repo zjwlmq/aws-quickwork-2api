@@ -192,6 +192,14 @@ func scanAccount(row scanner) (*Account, error) {
 // Save inserts a new account or updates the matching (email, tenant_url)
 // account. The account ID is updated in place.
 func (s *Store) Save(ctx context.Context, a *Account) error {
+	return saveAccount(ctx, s.db, a, false)
+}
+
+type accountWriter interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func saveAccount(ctx context.Context, target accountWriter, a *Account, restore bool) error {
 	now := time.Now().Unix()
 	if a.CreatedAt == 0 {
 		a.CreatedAt = now
@@ -236,7 +244,11 @@ ON CONFLICT(email, tenant_url) DO UPDATE SET
 	disabled=0,
 	last_error=''
 RETURNING id`
-	err := s.db.QueryRowContext(ctx, q,
+	query := q
+	if restore {
+		query = strings.Replace(query, "disabled=0,", "disabled=excluded.disabled,", 1)
+	}
+	err := target.QueryRowContext(ctx, query,
 		a.Email, a.DisplayName, a.Provider, a.BuildStage, a.Region,
 		a.TenantURL, a.WSHost, a.WSPath, a.AccessToken, a.RefreshToken, a.IDToken,
 		a.ActorARN, a.AWSAccountID, a.AccountName, a.ClientID, a.ClientSecret,
